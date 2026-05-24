@@ -26,6 +26,9 @@ release/
 # Local debugging artifacts (sample payloads, scratch scripts)
 dev/
 
+# Test + coverage output (mirrors what CI writes)
+TestResults/
+
 # OS junk
 Thumbs.db
 .DS_Store

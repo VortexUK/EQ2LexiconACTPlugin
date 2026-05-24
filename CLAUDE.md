@@ -8,26 +8,28 @@ Companion repo: [VortexUK/EQ2CensusBot](https://github.com/VortexUK/EQ2CensusBot
 
 ## Architecture
 
-Two distinct layers:
+Two distinct assemblies in the same solution:
 
-- **ACT-coupled** (`Plugin.cs`, `SettingsPanel.cs`, `EncounterCapture.cs`, `ActHelpers.cs`) — touches `Advanced_Combat_Tracker.*` types or `System.Windows.Forms`. Lives at the integration boundary.
-- **Pure** (`PayloadBuilder.cs`, `Snapshots.cs`, `PluginConfig.cs`, `UploadClient.cs`) — depends only on the .NET Framework. Unit-tested via xUnit without any ACT mocks. `EncounterCapture.CaptureSnapshot()` is the one-way adapter from ACT types to the pure layer.
+- **`src/EQ2Lexicon.ACTPlugin.csproj` (UI)** — `Plugin.cs`, `SettingsPanel.cs`, `EncounterCapture.cs`, `ActHelpers.cs`. Touches `Advanced_Combat_Tracker.*` types and `System.Windows.Forms`. Cannot be built on a machine without ACT.
+- **`src/Core/EQ2Lexicon.ACTPlugin.Core.csproj` (Core)** — `PayloadBuilder.cs`, `Snapshots.cs`, `PluginConfig.cs`, `UploadClient.cs`. Depends only on the .NET BCL. Unit-tested via xUnit without any ACT mocks. Builds cleanly on CI runners that lack ACT.
 
-The split exists so the build/sanitise/upload logic is testable without instantiating ACT's sealed classes.
+The UI assembly `<ProjectReference>`s Core and excludes `Core/**/*.cs` from its own compile (the SDK-style `*.cs` glob would otherwise compile every Core file into both assemblies). `EncounterCapture.CaptureSnapshot()` is the one-way adapter from ACT types to the pure Core layer.
+
+The split also unlocks GitHub Actions CI: the workflow at `.github/workflows/ci.yml` builds Core + tests + runs coverage on `windows-latest`, never touching the UI assembly.
 
 ## Key files
 
 | File | Purpose |
 |---|---|
-| `src/Plugin.cs` | `IActPluginV1` entry point. ACT calls `InitPlugin`/`DeInitPlugin`. Owns lifecycles of `PluginConfig`, `SettingsPanel`, `EncounterCapture`, `UploadClient`. |
-| `src/SettingsPanel.cs` | WinForms settings UI hosted in ACT's plugin tab. Dark-theme card layout (`T` static class holds every colour). Three cards: Configuration / Logging As / Last Captured. |
-| `src/EncounterCapture.cs` | 2 s polling timer over `ActGlobals.oFormActMain.ActiveZone`. Detects "settled" encounters (no `EndTime` update for `SettleSeconds=15`), converts to `EncounterSnapshot`, hands off to `PayloadBuilder`. |
-| `src/PayloadBuilder.cs` | Pure transform: `EncounterSnapshot` → ingest-JSON dict shape. Owns `OutgoingGroupToSwingType`, `FormatTime` (emits ISO-8601 + Z), `SanitizePayload` (replaces NaN/∞ with 0). |
-| `src/Snapshots.cs` | Plain DTOs (`EncounterSnapshot`, `CombatantSnapshot`, `DamageTypeAggregate`, `AttackTypeSnapshot`) that mirror the slice of ACT's data model the payload builder reads. |
-| `src/PluginConfig.cs` | User settings persisted as XML at `%APPDATA%\Advanced Combat Tracker\Config\EQ2Lexicon.ACTPlugin.config.xml`. API token is DPAPI-encrypted on disk (current-user scope) with a `DPAPI:` prefix; legacy plaintext from v0.1.0–v0.1.4 still loads. |
-| `src/UploadClient.cs` | `HttpClient` wrapper. `TestConnectionAsync` (GET `/api/auth/whoami`), `UploadEncounterAsync` (POST `/api/parses/ingest`). `ValidateServerUrl` rejects non-https except `localhost`/`127.0.0.1`/`[::1]`. |
-| `src/ActHelpers.cs` | Reads the logging character name by parsing the active log file path (`eq2log_<name>.txt`). `ActGlobals.charName` returns `"YOU"` in EQ2 so it can't be used. |
-| `tests/EQ2Lexicon.ACTPlugin.Tests/` | xUnit project, `net48`. 72 tests. Covers PayloadBuilder, PluginConfig (incl. DPAPI roundtrip), UploadClient (incl. URL validator). |
+| `src/Plugin.cs` | `IActPluginV1` entry point. ACT calls `InitPlugin`/`DeInitPlugin`. Resolves the config path via `ActHelpers.GetConfigPath()` and passes it to `PluginConfig.Load`/`Save`. Owns lifecycles of `PluginConfig`, `SettingsPanel`, `EncounterCapture`, `UploadClient`. |
+| `src/SettingsPanel.cs` | WinForms settings UI hosted in ACT's plugin tab. Dark-theme card layout (`T` static class holds every colour). Three cards: Configuration / Logging As / Last Captured. Persistence happens via the `_onSave` callback so the panel stays path-free. |
+| `src/EncounterCapture.cs` | 2 s polling timer over `ActGlobals.oFormActMain.ActiveZone`. Detects "settled" encounters (no `EndTime` update for `SettleSeconds=15`), converts to `EncounterSnapshot`, then calls `PayloadBuilder.BuildPayload` → `SanitizePayload` → `SerializeJson`. |
+| `src/ActHelpers.cs` | Reads the logging character name by parsing the active log file path (`eq2log_<name>.txt`). `ActGlobals.charName` returns `"YOU"` in EQ2 so it can't be used. Also owns `GetConfigPath()` — the `%APPDATA%\Advanced Combat Tracker\Config\` resolver kept here so `PluginConfig` stays ACT-free. |
+| `src/Core/PayloadBuilder.cs` | Pure transform: `EncounterSnapshot` → ingest-JSON dict shape. Owns `OutgoingGroupToSwingType`, `FormatTime` (emits ISO-8601 + Z), `SanitizePayload` (replaces NaN/∞ with 0), and `SerializeJson` (JavaScriptSerializer with an 8 MB ceiling). |
+| `src/Core/Snapshots.cs` | Plain DTOs (`EncounterSnapshot`, `CombatantSnapshot`, `DamageTypeAggregate`, `AttackTypeSnapshot`) that mirror the slice of ACT's data model the payload builder reads. |
+| `src/Core/PluginConfig.cs` | User settings persisted as XML. `Load(path)` and `Save(path)` take the path from the caller (resolved in `Plugin.cs` via `ActHelpers.GetConfigPath()`). API token is DPAPI-encrypted on disk (current-user scope) with a `DPAPI:` prefix; legacy plaintext from v0.1.0–v0.1.4 still loads. |
+| `src/Core/UploadClient.cs` | `HttpClient` wrapper. `TestConnectionAsync` (GET `/api/auth/whoami`), `UploadEncounterAsync` (POST `/api/parses/ingest`). `ValidateServerUrl` rejects non-https except `localhost`/`127.0.0.1`/`[::1]`. |
+| `tests/EQ2Lexicon.ACTPlugin.Tests/` | xUnit project, `net48`. 72 tests. References Core only (UI types aren't testable without ACT). Covers PayloadBuilder, PluginConfig (incl. DPAPI roundtrip), UploadClient (incl. URL validator). Coverage collected via `coverlet.collector`. |
 
 ## Versioning + releases
 
@@ -69,13 +71,27 @@ dotnet format EQ2Lexicon.ACTPlugin.sln --verify-no-changes  # CI-style check
 
 ## Pre-push hook
 
-`.githooks/pre-push` runs `dotnet format --verify-no-changes` + `dotnet build -c Release` + `dotnet test --no-build -c Release` on every `git push`. Activate per-clone with:
+`.githooks/pre-push` runs `dotnet format --verify-no-changes` + `dotnet build -c Release` + `dotnet test --no-build -c Release` + `dotnet list package --vulnerable --include-transitive` on every `git push`. Activate per-clone with:
 
 ```powershell
 git config core.hooksPath .githooks
 ```
 
-There is intentionally NO GitHub Actions CI — the build requires ACT's `Advanced Combat Tracker.exe` as a reference, which GitHub runners don't have. See the [CI / CD gaps](#cicd-gaps) section below if/when that changes.
+## GitHub Actions CI
+
+`.github/workflows/ci.yml` runs on every push and PR to `main`. Steps mirror the pre-push hook plus coverage and artifact upload:
+
+1. `setup-dotnet` reads `global.json` so the runner uses the same SDK version as local dev.
+2. `dotnet format --verify-no-changes` (style gate).
+3. Builds `src/Core/EQ2Lexicon.ACTPlugin.Core.csproj` + the tests project — NOT the UI assembly, which would need ACT installed on the runner.
+4. `dotnet test --collect:"XPlat Code Coverage"` — `coverlet.collector` drops a Cobertura XML into `TestResults/`.
+5. `dotnet list package --vulnerable --include-transitive` (CVE gate).
+6. `ReportGenerator` renders the Cobertura XML into HTML + a Markdown summary posted to `$GITHUB_STEP_SUMMARY` (visible inline on the job page).
+7. Uploads `coverage-report/` and the `.trx` test-result files as artifacts (30-day retention).
+
+Runner is `windows-latest` — net48 tests need the .NET Framework reference assemblies that only the Windows runner ships. Free for public repos.
+
+Dependabot (`.github/dependabot.yml`) opens weekly PRs for NuGet packages in the tests project and for the GitHub Actions versions used in the workflows.
 
 ## Threat model
 
@@ -110,15 +126,17 @@ See the audit findings + fixes in commits `9eb39e0` (v0.1.4) and `5f9e11a` (v0.1
 
 ## CI/CD gaps
 
-The pre-push hook is the only automated gate today. A future "comprehensive" pipeline would add:
+Comprehensive pipeline status as of v0.1.5 + the B2.16 sprint:
 
-| Gap | Why it matters | Cost |
-|---|---|---|
-| GitHub Actions build/test on PR | Catches regressions before they reach `main` | Medium — needs a stub ACT assembly checked into CI, or splitting into Core (no ACT) + UI (ACT-coupled) projects so CI can build Core+tests without ACT |
-| Auto-release on `v*` tag push | Removes the 4-step manual `gh release create` recipe | Low — single GitHub Actions workflow |
-| `global.json` to pin .NET SDK | Reproducible builds across dev machines | Tiny — 5-line file |
-| Dependabot / Renovate | Auto-PRs for xUnit, Test.Sdk upgrades | Tiny — `.github/dependabot.yml` |
-| Code coverage report | Visibility into test gaps | Medium — `coverlet` + Codecov badge |
-| Authenticode-signed DLL | No SmartScreen warning for users | $$ — ~$200/yr for a cert |
-| Changelog automation | Release notes generated from PR labels | Small — `release-drafter` |
-| Vulnerability scanning | Catches transitive deps with CVEs | Tiny — `dotnet list package --vulnerable` in pre-push |
+| Item | Status |
+|---|---|
+| Pre-push gate (format, build, test, vuln scan) | ✅ `.githooks/pre-push` |
+| Pinned SDK | ✅ `global.json` |
+| GitHub Actions build/test on PR | ✅ `.github/workflows/ci.yml` (builds Core + tests) |
+| Code coverage report | ✅ Coverlet + ReportGenerator, posted to job summary + artifact |
+| Vulnerability scanning | ✅ `dotnet list package --vulnerable` in pre-push + CI |
+| Dependabot | ✅ `.github/dependabot.yml` |
+| Core/UI assembly split (so CI can build without ACT) | ✅ `src/Core/` |
+| Auto-release on `v*` tag push | ⏳ Pending — manual `gh release create` recipe documented above |
+| Authenticode-signed DLL | ❌ Skipped — ~$200/yr cert not worth it; users click through SmartScreen |
+| Changelog automation | ❌ Skipped — release notes hand-written per release |

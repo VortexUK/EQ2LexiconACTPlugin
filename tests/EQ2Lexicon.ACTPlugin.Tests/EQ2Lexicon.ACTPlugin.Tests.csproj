@@ -13,6 +13,13 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <!--
+      coverlet.collector wires into the `dotnet test` data-collector with
+      the "XPlat Code Coverage" name and drops a coverage.cobertura.xml
+      into the TestResults/ folder, which the CI job then feeds to
+      ReportGenerator for the HTML summary.
+    -->
+    <PackageReference Include="coverlet.collector" Version="6.0.2" />
   </ItemGroup>
 
   <ItemGroup>
