@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <RootNamespace>EQ2Lexicon.ACTPlugin</RootNamespace>
+    <AssemblyName>EQ2Lexicon.ACTPlugin</AssemblyName>
+    <OutputType>Library</OutputType>
+    <LangVersion>latest</LangVersion>
+    <Nullable>annotations</Nullable>
+
+    <!--
+      Path to ACT's install dir for the reference assembly.
+      Override per-machine by setting the ACT_INSTALL_DIR env var, or by
+      adding a Directory.Build.props with your own <ActInstallDir> value.
+    -->
+    <ActInstallDir Condition="'$(ActInstallDir)' == ''">$(ACT_INSTALL_DIR)</ActInstallDir>
+    <ActInstallDir Condition="'$(ActInstallDir)' == ''">C:\Program Files (x86)\Advanced Combat Tracker</ActInstallDir>
+
+    <!-- Build metadata shown in ACT's plugin list -->
+    <Version>0.1.0</Version>
+    <Company>EQ2 Lexicon</Company>
+    <Product>EQ2 Lexicon Uploader</Product>
+    <Description>Uploads ACT-parsed encounters to the EQ2 Lexicon site.</Description>
+  </PropertyGroup>
+
+  <!--
+    ACT itself is the reference assembly (the EXE is a .NET assembly that
+    exposes the plugin interfaces). Private=False stops MSBuild copying the
+    EXE into bin/.
+  -->
+  <ItemGroup>
+    <Reference Include="Advanced Combat Tracker">
+      <HintPath>$(ActInstallDir)\Advanced Combat Tracker.exe</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+
+  <!-- Fail early with a useful message if ACT isn't where we expect -->
+  <Target Name="VerifyActReference" BeforeTargets="ResolveAssemblyReferences">
+    <Error
+      Condition="!Exists('$(ActInstallDir)\Advanced Combat Tracker.exe')"
+      Text="Advanced Combat Tracker.exe not found at '$(ActInstallDir)'. Set the ACT_INSTALL_DIR environment variable to your ACT install directory and rebuild." />
+  </Target>
+
+</Project>
