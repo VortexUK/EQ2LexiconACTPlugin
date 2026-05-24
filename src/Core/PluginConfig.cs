@@ -5,14 +5,17 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Serialization;
-using Advanced_Combat_Tracker;
 
 namespace EQ2Lexicon.ACTPlugin
 {
     /// <summary>
-    /// User-configurable settings, persisted as XML under ACT's
-    /// AppDataFolder so the plugin survives ACT reinstalls / version
-    /// upgrades.
+    /// User-configurable settings, persisted as XML.
+    ///
+    /// The CALLER supplies the on-disk path to Load/Save — see
+    /// <c>ActHelpers.GetConfigPath()</c> in the UI assembly for the
+    /// production location under ACT's AppDataFolder. Keeping path
+    /// resolution out of this class lets it live in the ACT-free
+    /// <c>Core</c> assembly so it's unit-testable without ACT.
     ///
     /// API token is encrypted at rest via DPAPI (current-user scope)
     /// before being written to disk. Legacy plaintext tokens from
@@ -109,19 +112,8 @@ namespace EQ2Lexicon.ACTPlugin
         // Persistence
         // -------------------------------------------------------------------
 
-        public static string GetConfigPath()
+        public static PluginConfig Load(string path)
         {
-            // ActGlobals.oFormActMain.AppDataFolder points at
-            // %APPDATA%\Advanced Combat Tracker
-            var dir = Path.Combine(
-                ActGlobals.oFormActMain.AppDataFolder.FullName,
-                "Config");
-            return Path.Combine(dir, "EQ2Lexicon.ACTPlugin.config.xml");
-        }
-
-        public static PluginConfig Load()
-        {
-            var path = GetConfigPath();
             if (!File.Exists(path))
             {
                 return new PluginConfig();
@@ -148,9 +140,8 @@ namespace EQ2Lexicon.ACTPlugin
             }
         }
 
-        public void Save()
+        public void Save(string path)
         {
-            var path = GetConfigPath();
             var dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir))
             {

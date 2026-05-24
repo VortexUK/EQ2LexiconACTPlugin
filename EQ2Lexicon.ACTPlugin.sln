@@ -9,6 +9,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{58BB5893
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EQ2Lexicon.ACTPlugin.Tests", "tests\EQ2Lexicon.ACTPlugin.Tests\EQ2Lexicon.ACTPlugin.Tests.csproj", "{38AE31DB-39A8-4592-97BA-D9F823C12ED2}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{FEC7210A-36AC-4D80-9CF7-609999AF3B15}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EQ2Lexicon.ACTPlugin.Core", "src\Core\EQ2Lexicon.ACTPlugin.Core.csproj", "{ED09DA7B-6F8F-43F4-9B6B-43A847030F6E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -23,11 +27,16 @@ Global
 		{38AE31DB-39A8-4592-97BA-D9F823C12ED2}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{38AE31DB-39A8-4592-97BA-D9F823C12ED2}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{38AE31DB-39A8-4592-97BA-D9F823C12ED2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ED09DA7B-6F8F-43F4-9B6B-43A847030F6E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ED09DA7B-6F8F-43F4-9B6B-43A847030F6E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ED09DA7B-6F8F-43F4-9B6B-43A847030F6E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ED09DA7B-6F8F-43F4-9B6B-43A847030F6E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{38AE31DB-39A8-4592-97BA-D9F823C12ED2} = {58BB5893-34B4-4759-A688-E265E059E116}
+		{ED09DA7B-6F8F-43F4-9B6B-43A847030F6E} = {FEC7210A-36AC-4D80-9CF7-609999AF3B15}
 	EndGlobalSection
 EndGlobal

@@ -56,5 +56,20 @@ namespace EQ2Lexicon.ACTPlugin
 
             return "";
         }
+
+        /// <summary>
+        /// Production location for the plugin config XML. Lives in
+        /// %APPDATA%\Advanced Combat Tracker\Config\ so it survives ACT
+        /// reinstalls and plugin upgrades. Kept here (in the ACT-coupled
+        /// assembly) rather than on <see cref="PluginConfig"/> so the
+        /// config class itself can stay ACT-free + unit-testable.
+        /// </summary>
+        public static string GetConfigPath()
+        {
+            var dir = Path.Combine(
+                ActGlobals.oFormActMain.AppDataFolder.FullName,
+                "Config");
+            return Path.Combine(dir, "EQ2Lexicon.ACTPlugin.config.xml");
+        }
     }
 }

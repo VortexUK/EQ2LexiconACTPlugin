@@ -15,6 +15,7 @@ namespace EQ2Lexicon.ACTPlugin
         private Label? _statusLabel;
         private TabPage? _pluginTab;
         private PluginConfig? _config;
+        private string _configPath = "";
         private SettingsPanel? _settingsPanel;
         private EncounterCapture? _capture;
         private UploadClient? _uploadClient;
@@ -26,9 +27,13 @@ namespace EQ2Lexicon.ACTPlugin
 
             _pluginTab.Text = "EQ2 Lexicon";
 
+            // Resolve the path once at init — PluginConfig itself is ACT-free,
+            // so the caller (us) decides where it lives on disk.
+            _configPath = ActHelpers.GetConfigPath();
+
             try
             {
-                _config = PluginConfig.Load();
+                _config = PluginConfig.Load(_configPath);
             }
             catch (Exception ex)
             {
@@ -68,6 +73,10 @@ namespace EQ2Lexicon.ACTPlugin
 
         private void OnConfigSaved(PluginConfig config)
         {
+            // SettingsPanel mutates the config in place then invokes this
+            // callback — persistence lives here so PluginConfig stays
+            // path-free (and ACT-free) in the Core assembly.
+            config.Save(_configPath);
             _config = config;
             UpdateStatusFromConfig();
         }

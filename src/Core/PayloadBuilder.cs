@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Web.Script.Serialization;
 
 namespace EQ2Lexicon.ACTPlugin
 {
@@ -289,6 +290,22 @@ namespace EQ2Lexicon.ACTPlugin
             {
                 foreach (var item in list) SanitizePayload(item);
             }
+        }
+
+        /// <summary>
+        /// Serializes the upload payload to JSON. Lives here (not in the
+        /// ACT-coupled capture layer) so the System.Web.Extensions dependency
+        /// is confined to the Core assembly and the UI assembly stays free of
+        /// non-WinForms BCL refs. Raid encounters with many combatants can
+        /// produce JSON in the hundreds of KB, hence the 8MB ceiling.
+        /// </summary>
+        public static string SerializeJson(object payload)
+        {
+            var serializer = new JavaScriptSerializer
+            {
+                MaxJsonLength = 8 * 1024 * 1024,
+            };
+            return serializer.Serialize(payload);
         }
     }
 }

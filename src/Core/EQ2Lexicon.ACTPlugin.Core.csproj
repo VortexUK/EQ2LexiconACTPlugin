@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <RootNamespace>EQ2Lexicon.ACTPlugin</RootNamespace>
+    <AssemblyName>EQ2Lexicon.ACTPlugin.Core</AssemblyName>
+    <OutputType>Library</OutputType>
+    <LangVersion>latest</LangVersion>
+    <Nullable>annotations</Nullable>
+
+    <!--
+      Pure layer — no ACT or WinForms dependency. Lives separately so it
+      can be built and unit-tested on any OS / CI runner that lacks ACT.
+      The companion UI assembly (../EQ2Lexicon.ACTPlugin.csproj) references
+      this and adds the IActPluginV1 entry point, settings UI, and
+      encounter capture timer.
+
+      Build metadata is mirrored from the UI csproj so this assembly's
+      version tracks the user-facing plugin version.
+    -->
+    <Version>0.1.5</Version>
+    <Company>EQ2 Lexicon</Company>
+    <Product>EQ2 Lexicon Uploader (Core)</Product>
+    <Description>Pure payload / config / HTTP layer shared by EQ2Lexicon.ACTPlugin.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Web.Extensions" />
+    <!-- ProtectedData (DPAPI wrapper for the API token at rest). -->
+    <Reference Include="System.Security" />
+  </ItemGroup>
+
+  <!-- Test project sees `internal` helpers (UploadClient.ExtractJsonString, etc.). -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>EQ2Lexicon.ACTPlugin.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+</Project>

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using System.Web.Script.Serialization;
 using Advanced_Combat_Tracker;
 
 namespace EQ2Lexicon.ACTPlugin
@@ -25,12 +24,6 @@ namespace EQ2Lexicon.ACTPlugin
         private readonly Timer _timer;
         private readonly TimeSpan _interval = TimeSpan.FromSeconds(2);
         private readonly object _lock = new object();
-        private readonly JavaScriptSerializer _serializer = new JavaScriptSerializer
-        {
-            // Raid encounters with many combatants can produce JSON in the
-            // hundreds of KB.
-            MaxJsonLength = 8 * 1024 * 1024,
-        };
 
         // Track which encids we've already processed so we don't re-emit.
         // Capped via _processedQueue eviction to avoid unbounded growth.
@@ -119,7 +112,7 @@ namespace EQ2Lexicon.ACTPlugin
             var snapshot = CaptureSnapshot(enc);
             var payload = PayloadBuilder.BuildPayload(ActHelpers.GetLoggingCharacterName(), snapshot);
             PayloadBuilder.SanitizePayload(payload);
-            var json = _serializer.Serialize(payload);
+            var json = PayloadBuilder.SerializeJson(payload);
 
             lock (_lock)
             {

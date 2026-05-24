@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\EQ2Lexicon.ACTPlugin.csproj" />
+    <ProjectReference Include="..\..\src\Core\EQ2Lexicon.ACTPlugin.Core.csproj" />
   </ItemGroup>
 
 </Project>

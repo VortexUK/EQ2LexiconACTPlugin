@@ -332,7 +332,8 @@ namespace EQ2Lexicon.ACTPlugin
 
             try
             {
-                _config.Save();
+                // Plugin's OnConfigSaved callback owns the actual Save(path)
+                // — keeps SettingsPanel free of any persistence path concern.
                 _onSave?.Invoke(_config);
                 _testStatusLabel.ForeColor = T.Success;
                 _testStatusLabel.Text = $"✓ Saved at {DateTime.Now:HH:mm:ss}";
