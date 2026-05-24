@@ -130,5 +130,71 @@ namespace EQ2Lexicon.ACTPlugin.Tests
             Assert.NotNull(deserialized.BlacklistedCharacters);
             Assert.Empty(deserialized.BlacklistedCharacters);
         }
+
+        // ── DPAPI token encryption ─────────────────────────────────────────
+        // DPAPI is per-user / per-machine, so these tests pass on whatever
+        // dev machine runs them. They do *not* exercise cross-user behaviour.
+
+        [Fact]
+        public void EncryptToken_RoundtripsViaDecryptToken()
+        {
+            var plain = "eq2c_xfpgeXZbh0AoOyIw7Rfnm98CV3RTxEgy";
+            var encrypted = PluginConfig.EncryptToken(plain);
+            Assert.NotEqual(plain, encrypted);
+            Assert.StartsWith("DPAPI:", encrypted);
+            Assert.Equal(plain, PluginConfig.DecryptToken(encrypted));
+        }
+
+        [Fact]
+        public void EncryptToken_EmptyStaysEmpty()
+        {
+            // Don't encrypt empty — keeps the XML output stable for users
+            // who haven't yet set a token.
+            Assert.Equal("", PluginConfig.EncryptToken(""));
+            Assert.Equal("", PluginConfig.EncryptToken(null!));
+        }
+
+        [Fact]
+        public void DecryptToken_LegacyPlaintextReturnsAsIs()
+        {
+            // Pre-v0.1.5 configs on disk have plaintext tokens with no
+            // DPAPI: prefix. Loading those must still work; the next Save
+            // will then re-write them encrypted.
+            var legacy = "eq2c_legacy_token_no_prefix";
+            Assert.Equal(legacy, PluginConfig.DecryptToken(legacy));
+        }
+
+        [Fact]
+        public void DecryptToken_GarbageReturnsEmpty()
+        {
+            // Encrypted blob from a different user / machine / corrupted
+            // bytes — Unprotect throws, we swallow and return empty so the
+            // plugin loads with an empty token (user re-enters and re-saves).
+            Assert.Equal("", PluginConfig.DecryptToken("DPAPI:not-real-base64!"));
+            Assert.Equal("", PluginConfig.DecryptToken("DPAPI:" + System.Convert.ToBase64String(new byte[] { 1, 2, 3, 4 })));
+        }
+
+        [Fact]
+        public void DecryptToken_EmptyStaysEmpty()
+        {
+            Assert.Equal("", PluginConfig.DecryptToken(""));
+            Assert.Equal("", PluginConfig.DecryptToken(null!));
+        }
+
+        [Fact]
+        public void EncryptToken_ProducesDifferentCiphertextEachCall()
+        {
+            // DPAPI mixes in a random IV per call, so the same plaintext
+            // shouldn't produce identical ciphertext twice. This is a small
+            // hedge against a future "compare ciphertexts to detect token
+            // reuse" attack.
+            var plain = "eq2c_some_token";
+            var a = PluginConfig.EncryptToken(plain);
+            var b = PluginConfig.EncryptToken(plain);
+            Assert.NotEqual(a, b);
+            // But both decrypt back to the same plain text.
+            Assert.Equal(plain, PluginConfig.DecryptToken(a));
+            Assert.Equal(plain, PluginConfig.DecryptToken(b));
+        }
     }
 }
