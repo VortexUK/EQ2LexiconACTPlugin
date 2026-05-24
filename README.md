@@ -1,7 +1,9 @@
 # EQ2 Lexicon — ACT Plugin
 
 [![CI](https://github.com/VortexUK/EQ2LexiconACTPlugin/actions/workflows/ci.yml/badge.svg)](https://github.com/VortexUK/EQ2LexiconACTPlugin/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/VortexUK/EQ2LexiconACTPlugin/actions/workflows/codeql.yml/badge.svg)](https://github.com/VortexUK/EQ2LexiconACTPlugin/actions/workflows/codeql.yml)
 [![Latest release](https://img.shields.io/github/v/release/VortexUK/EQ2LexiconACTPlugin)](https://github.com/VortexUK/EQ2LexiconACTPlugin/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 An [Advanced Combat Tracker](https://advancedcombattracker.com) plugin that uploads parsed EverQuest 2 encounters to the [EQ2 Lexicon](https://eq2lexicon.up.railway.app) website automatically after each fight ends.
 
@@ -116,4 +118,4 @@ gh release edit vX.Y.Z --draft=false
 
 ## License
 
-TBD.
+[MIT](LICENSE).

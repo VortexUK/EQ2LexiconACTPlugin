@@ -1,0 +1,68 @@
+name: Bug report
+description: Something the plugin does wrong, or fails to do.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. A complete report makes it dramatically more likely to get fixed quickly.
+
+        **Security issue?** Don't file it here — use [GitHub Security Advisories](https://github.com/VortexUK/EQ2LexiconACTPlugin/security/advisories/new) instead.
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: From ACT's Plugin Listing, or the filename you downloaded.
+      placeholder: "v0.1.6"
+    validations:
+      required: true
+
+  - type: input
+    id: act-version
+    attributes:
+      label: ACT version
+      description: From ACT's title bar, or Help → About.
+      placeholder: "3.8.5.288"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 Pro 10.0.26200"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, what did you see, and what did you expect instead?
+      placeholder: |
+        1. Killed a trash mob in Hadden's Earthen Cave
+        2. Expected an upload status of "uploaded (X)" in the Last Captured card
+        3. Saw "error: ..." instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: settings-panel
+    attributes:
+      label: What does the Last Captured card show?
+      description: |
+        Open ACT → EQ2 Lexicon tab → Last Captured card. Paste the encounter title, time, combatant count, attack-type count, and upload status verbatim.
+        **Do not include your API token anywhere in this issue.**
+    validations:
+      required: false
+
+  - type: textarea
+    id: payload
+    attributes:
+      label: Captured payload (optional)
+      description: |
+        If the bug is about payload contents, click "Show payload" on the Last Captured card and paste a redacted sample. Strip your character name if you'd rather keep it private.
+      render: json
+    validations:
+      required: false

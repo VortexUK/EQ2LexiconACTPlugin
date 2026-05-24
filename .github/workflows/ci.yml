@@ -101,6 +101,27 @@ jobs:
           }
           Get-Content "TestResults/CoverageReport/Summary.txt"
 
+      # Enforce a minimum line-coverage threshold. We parse the
+      # ReportGenerator summary because coverlet.collector doesn't
+      # expose a per-run threshold flag (coverlet.msbuild does, but
+      # we're on the collector for net48 compat).
+      - name: Coverage threshold (line >= 70%)
+        shell: pwsh
+        run: |
+          $summary = Get-Content "TestResults/CoverageReport/Summary.txt" -Raw
+          # Match e.g. "Line coverage: 87.3%". The regex captures the float.
+          if ($summary -match 'Line coverage:\s*([0-9]+(?:\.[0-9]+)?)%') {
+            $coverage = [double]$Matches[1]
+            Write-Host "Line coverage: $coverage%"
+            if ($coverage -lt 70) {
+              Write-Error "Coverage $coverage% is below the 70% threshold"
+              exit 1
+            }
+          } else {
+            Write-Error "Could not parse line coverage from Summary.txt"
+            exit 1
+          }
+
       - name: Upload coverage report
         uses: actions/upload-artifact@v7
         if: always()
