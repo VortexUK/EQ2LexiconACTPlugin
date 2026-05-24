@@ -103,27 +103,27 @@ namespace EQ2Lexicon.ACTPlugin
             stack.Controls.Add(MakeHeader(out _headerStatusGlyph, out _headerStatusText));
 
             // ── Card: Configuration ────────────────────────────────────────
-            var (cfgCard, cfgBody) = MakeCard("⚙ CONFIGURATION");
+            var cfgCard = MakeCard("⚙ CONFIGURATION");
             stack.Controls.Add(cfgCard);
 
-            cfgBody.Controls.Add(MakeFieldLabel("Server URL"));
+            cfgCard.Controls.Add(MakeFieldLabel("Server URL"));
             _serverUrl = MakeTextBox(_config.ServerUrl);
-            cfgBody.Controls.Add(_serverUrl);
+            cfgCard.Controls.Add(_serverUrl);
 
-            cfgBody.Controls.Add(MakeSpacer(8));
+            cfgCard.Controls.Add(MakeSpacer(8));
 
-            cfgBody.Controls.Add(MakeFieldLabel("API Token"));
-            cfgBody.Controls.Add(MakeHint("Generate one on the site under your profile → API Tokens, then paste it here."));
+            cfgCard.Controls.Add(MakeFieldLabel("API Token"));
+            cfgCard.Controls.Add(MakeHint("Generate one on the site under your profile → API Tokens, then paste it here."));
             _apiToken = MakeTextBox(_config.ApiToken);
             _apiToken.Font = new Font(FontFamily.GenericMonospace, 9f);
-            cfgBody.Controls.Add(_apiToken);
+            cfgCard.Controls.Add(_apiToken);
 
-            cfgBody.Controls.Add(MakeSpacer(12));
+            cfgCard.Controls.Add(MakeSpacer(12));
 
             _uploadEnabled = MakeCheckBox("Enable automatic upload after each encounter", _config.UploadEnabled);
-            cfgBody.Controls.Add(_uploadEnabled);
+            cfgCard.Controls.Add(_uploadEnabled);
 
-            cfgBody.Controls.Add(MakeSpacer(14));
+            cfgCard.Controls.Add(MakeSpacer(14));
 
             // Button row: Save (primary) + Test connection (secondary) + inline status
             var cfgButtons = new FlowLayoutPanel
@@ -154,10 +154,10 @@ namespace EQ2Lexicon.ACTPlugin
                 MaximumSize = new Size(InputWidth - 240, 0),
             };
             cfgButtons.Controls.Add(_testStatusLabel);
-            cfgBody.Controls.Add(cfgButtons);
+            cfgCard.Controls.Add(cfgButtons);
 
             // ── Card: Logging as ───────────────────────────────────────────
-            var (logCard, logBody) = MakeCard("ⓘ LOGGING AS");
+            var logCard = MakeCard("ⓘ LOGGING AS");
             stack.Controls.Add(logCard);
 
             _currentCharLabel = new Label
@@ -169,10 +169,10 @@ namespace EQ2Lexicon.ACTPlugin
                 Margin = new Padding(0, 0, 0, 10),
                 Text = "",
             };
-            logBody.Controls.Add(_currentCharLabel);
+            logCard.Controls.Add(_currentCharLabel);
 
-            logBody.Controls.Add(MakeFieldLabel("Don't upload as"));
-            logBody.Controls.Add(MakeHint("One character name per line. Encounters logged as these characters are skipped."));
+            logCard.Controls.Add(MakeFieldLabel("Don't upload as"));
+            logCard.Controls.Add(MakeHint("One character name per line. Encounters logged as these characters are skipped."));
             _blacklist = new TextBox
             {
                 Multiline = true,
@@ -187,11 +187,11 @@ namespace EQ2Lexicon.ACTPlugin
                 BorderStyle = BorderStyle.FixedSingle,
                 Margin = new Padding(0, 6, 0, 4),
             };
-            logBody.Controls.Add(_blacklist);
+            logCard.Controls.Add(_blacklist);
             UpdateCurrentCharLabel();
 
             // ── Card: Last captured ────────────────────────────────────────
-            var (capCard, capBody) = MakeCard("◆ LAST CAPTURED ENCOUNTER");
+            var capCard = MakeCard("◆ LAST CAPTURED ENCOUNTER");
             stack.Controls.Add(capCard);
 
             _captureLabel = new Label
@@ -203,7 +203,7 @@ namespace EQ2Lexicon.ACTPlugin
                 BackColor = T.Card,
                 Margin = new Padding(0, 0, 0, 10),
             };
-            capBody.Controls.Add(_captureLabel);
+            capCard.Controls.Add(_captureLabel);
 
             var capButtons = new FlowLayoutPanel
             {
@@ -218,7 +218,7 @@ namespace EQ2Lexicon.ACTPlugin
             _showPayloadBtn.Enabled = false;
             _showPayloadBtn.Click += OnShowPayloadClicked;
             capButtons.Controls.Add(_showPayloadBtn);
-            capBody.Controls.Add(capButtons);
+            capCard.Controls.Add(capButtons);
 
             _uploadStatusLabel = new Label
             {
@@ -229,7 +229,7 @@ namespace EQ2Lexicon.ACTPlugin
                 BackColor = T.Card,
                 Text = "",
             };
-            capBody.Controls.Add(_uploadStatusLabel);
+            capCard.Controls.Add(_uploadStatusLabel);
 
             Controls.Add(stack);
             UpdateHeaderStatus();
@@ -438,40 +438,67 @@ namespace EQ2Lexicon.ACTPlugin
         // Builders — themed widget factories
         // ──────────────────────────────────────────────────────────────────
 
-        private static Panel MakeHeader(out Label statusGlyph, out Label statusText)
+        private static TableLayoutPanel MakeHeader(out Label statusGlyph, out Label statusText)
         {
-            var panel = new Panel
+            // 2-col TableLayout: title block (autosize fill) | status pill (autosize right).
+            // Beats absolute Location + Anchor — TLP handles right-alignment cleanly.
+            var tlp = new TableLayoutPanel
             {
                 AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 2,
+                RowCount = 1,
                 BackColor = T.Bg,
                 Margin = new Padding(0, 0, 0, 12),
                 Padding = new Padding(0),
-                Width = CardWidth,
+                MinimumSize = new Size(CardWidth, 0),
+                MaximumSize = new Size(CardWidth, 9999),
             };
+            tlp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            tlp.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tlp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-            var title = new Label
+            var titleBlock = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = T.Bg,
+                Margin = new Padding(0),
+                Padding = new Padding(0),
+            };
+            titleBlock.Controls.Add(new Label
             {
                 Text = "EQ2 LEXICON UPLOADER",
                 Font = new Font("Segoe UI", 12.5f, FontStyle.Bold),
                 ForeColor = T.Gold,
                 AutoSize = true,
                 BackColor = T.Bg,
-                Location = new Point(0, 0),
-            };
-            panel.Controls.Add(title);
-
-            var subtitle = new Label
+                Margin = new Padding(0, 0, 0, 2),
+            });
+            titleBlock.Controls.Add(new Label
             {
                 Text = "Uploads each finished ACT encounter to the EQ2 Lexicon site.",
                 Font = new Font("Segoe UI", 8.5f),
                 ForeColor = T.TextMuted,
                 AutoSize = true,
                 BackColor = T.Bg,
-                Location = new Point(0, 24),
-            };
-            panel.Controls.Add(subtitle);
+                Margin = new Padding(0),
+            });
+            tlp.Controls.Add(titleBlock, 0, 0);
 
-            // Status pill (anchored right): coloured ● + label
+            var statusBlock = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = T.Bg,
+                Anchor = AnchorStyles.Right,
+                Margin = new Padding(0, 8, 0, 0),
+                Padding = new Padding(0),
+            };
             statusGlyph = new Label
             {
                 Text = "●",
@@ -479,8 +506,7 @@ namespace EQ2Lexicon.ACTPlugin
                 ForeColor = T.TextMuted,
                 AutoSize = true,
                 BackColor = T.Bg,
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                Location = new Point(CardWidth - 110, 4),
+                Margin = new Padding(0, 0, 4, 0),
             };
             statusText = new Label
             {
@@ -489,56 +515,52 @@ namespace EQ2Lexicon.ACTPlugin
                 ForeColor = T.TextMuted,
                 AutoSize = true,
                 BackColor = T.Bg,
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                Location = new Point(CardWidth - 92, 6),
+                Margin = new Padding(0, 2, 0, 0),
             };
-            panel.Controls.Add(statusGlyph);
-            panel.Controls.Add(statusText);
+            statusBlock.Controls.Add(statusGlyph);
+            statusBlock.Controls.Add(statusText);
+            tlp.Controls.Add(statusBlock, 1, 0);
 
-            panel.Height = 44;
-            return panel;
+            return tlp;
         }
 
         /// <summary>
-        /// Build a bordered card with a coloured section header inside. Returns
-        /// the outer panel and the inner "body" container that callers add
-        /// their controls into.
+        /// Build a bordered card. Returns a single FlowLayoutPanel that is
+        /// both the card frame and the content container — callers add their
+        /// own widgets directly to it. The section-header label is added as
+        /// the first child.
+        ///
+        /// Sizing: FlowLayoutPanel AutoSize + Min/MaxSize pins the width to
+        /// CardWidth while letting the height grow with content. The earlier
+        /// outer-panel-with-docked-body approach hit the classic WinForms
+        /// "AutoSize parent + Dock child" zero-size loop.
         /// </summary>
-        private static (Panel outer, FlowLayoutPanel body) MakeCard(string title)
+        private static FlowLayoutPanel MakeCard(string title)
         {
-            var outer = new Panel
-            {
-                Width = CardWidth,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                BackColor = T.Card,
-                Padding = new Padding(CardPad, 12, CardPad, CardPad),
-                Margin = new Padding(0, 0, 0, 12),
-            };
-            // FixedSingle would draw a system-coloured border that fights
-            // with our theme; paint a 1px border ourselves instead.
-            outer.Paint += (s, e) =>
-            {
-                using (var pen = new Pen(T.CardBorder, 1))
-                {
-                    var r = outer.ClientRectangle;
-                    e.Graphics.DrawRectangle(pen, 0, 0, r.Width - 1, r.Height - 1);
-                }
-            };
-
-            var body = new FlowLayoutPanel
+            var card = new FlowLayoutPanel
             {
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 BackColor = T.Card,
-                Padding = new Padding(0),
-                Margin = new Padding(0),
-                Dock = DockStyle.Top,
+                Padding = new Padding(CardPad, 12, CardPad, CardPad),
+                Margin = new Padding(0, 0, 0, 12),
+                MinimumSize = new Size(CardWidth, 0),
+                MaximumSize = new Size(CardWidth, 99999),
+            };
+            // Custom border — FixedSingle would draw a system-coloured one
+            // that fights our theme.
+            card.Paint += (s, e) =>
+            {
+                using (var pen = new Pen(T.CardBorder, 1))
+                {
+                    var r = card.ClientRectangle;
+                    e.Graphics.DrawRectangle(pen, 0, 0, r.Width - 1, r.Height - 1);
+                }
             };
 
-            var header = new Label
+            card.Controls.Add(new Label
             {
                 Text = title,
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
@@ -546,11 +568,9 @@ namespace EQ2Lexicon.ACTPlugin
                 AutoSize = true,
                 BackColor = T.Card,
                 Margin = new Padding(0, 0, 0, 10),
-            };
-            body.Controls.Add(header);
+            });
 
-            outer.Controls.Add(body);
-            return (outer, body);
+            return card;
         }
 
         private static Label MakeFieldLabel(string text)
