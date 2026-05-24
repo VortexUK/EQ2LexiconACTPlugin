@@ -22,7 +22,7 @@
     <ActInstallDir Condition="'$(ActInstallDir)' == ''">C:\Program Files (x86)\Advanced Combat Tracker</ActInstallDir>
 
     <!-- Build metadata shown in ACT's plugin list -->
-    <Version>0.1.5</Version>
+    <Version>0.1.6</Version>
     <Company>EQ2 Lexicon</Company>
     <Product>EQ2 Lexicon Uploader</Product>
     <Description>Uploads ACT-parsed encounters to the EQ2 Lexicon site.</Description>
