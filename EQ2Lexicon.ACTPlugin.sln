@@ -1,9 +1,13 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EQ2Lexicon.ACTPlugin", "src\EQ2Lexicon.ACTPlugin.csproj", "{C0B0E73F-E1B7-4A6E-A1F7-2C7A5E1F2D8A}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{58BB5893-34B4-4759-A688-E265E059E116}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EQ2Lexicon.ACTPlugin.Tests", "tests\EQ2Lexicon.ACTPlugin.Tests\EQ2Lexicon.ACTPlugin.Tests.csproj", "{38AE31DB-39A8-4592-97BA-D9F823C12ED2}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -15,8 +19,15 @@ Global
 		{C0B0E73F-E1B7-4A6E-A1F7-2C7A5E1F2D8A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C0B0E73F-E1B7-4A6E-A1F7-2C7A5E1F2D8A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C0B0E73F-E1B7-4A6E-A1F7-2C7A5E1F2D8A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{38AE31DB-39A8-4592-97BA-D9F823C12ED2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{38AE31DB-39A8-4592-97BA-D9F823C12ED2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{38AE31DB-39A8-4592-97BA-D9F823C12ED2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{38AE31DB-39A8-4592-97BA-D9F823C12ED2}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{38AE31DB-39A8-4592-97BA-D9F823C12ED2} = {58BB5893-34B4-4759-A688-E265E059E116}
 	EndGlobalSection
 EndGlobal

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using System.Web.Script.Serialization;
 using Advanced_Combat_Tracker;
@@ -8,20 +7,18 @@ using Advanced_Combat_Tracker;
 namespace EQ2Lexicon.ACTPlugin
 {
     /// <summary>
-    /// Polls ACT's active zone every couple of seconds. When the most recent
-    /// encounter has been closed by ACT (EndTime set) and we haven't seen
-    /// it before, walks the EncounterData into the JSON shape our server's
-    /// /api/parses/ingest endpoint expects.
+    /// Polls ACT's active zone every couple of seconds. When an encounter
+    /// has settled (no EndTime updates for <see cref="SettleSeconds"/>),
+    /// converts it into an <see cref="EncounterSnapshot"/> and hands it
+    /// to <see cref="PayloadBuilder"/> for the upload-shaped JSON.
     ///
-    /// This commit only CAPTURES — there's no HTTP upload here. The captured
-    /// payload is exposed via LastCapturedPayloadJson / LastCapturedSummary
-    /// for the settings panel to display, so we can verify the shape before
-    /// wiring the upload in B2.3.
+    /// All ACT-coupled glue lives here. The shape of the produced JSON
+    /// lives in PayloadBuilder and is unit-tested separately.
     ///
     /// Threading: Timer fires on a worker thread. We do all the walking on
     /// that thread (safe because the encounter is closed — ACT won't mutate
-    /// it further). On completion we raise OnCaptured; subscribers that need
-    /// to touch the UI must marshal back to the UI thread themselves.
+    /// it further). On completion we raise <see cref="OnCaptured"/>;
+    /// subscribers that need to touch the UI must marshal back themselves.
     /// </summary>
     internal class EncounterCapture : IDisposable
     {
@@ -30,14 +27,13 @@ namespace EQ2Lexicon.ACTPlugin
         private readonly object _lock = new object();
         private readonly JavaScriptSerializer _serializer = new JavaScriptSerializer
         {
-            // Allow large payloads — raid encounters with many combatants
-            // can produce JSON in the hundreds of KB.
+            // Raid encounters with many combatants can produce JSON in the
+            // hundreds of KB.
             MaxJsonLength = 8 * 1024 * 1024,
         };
 
         // Track which encids we've already processed so we don't re-emit.
-        // Keyed by encid; value unused. Capped via _processedQueue eviction
-        // to avoid unbounded growth across long ACT sessions.
+        // Capped via _processedQueue eviction to avoid unbounded growth.
         private readonly HashSet<string> _processed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly Queue<string> _processedQueue = new Queue<string>();
         private const int ProcessedCap = 500;
@@ -117,11 +113,12 @@ namespace EQ2Lexicon.ACTPlugin
 
         private void ProcessEncounter(EncounterData enc, string encid)
         {
-            // Build the payload before claiming the encid — if walking
-            // throws, we want to retry on the next tick rather than
-            // silently swallow.
-            var payload = BuildPayload(enc);
-            SanitizePayload(payload);
+            // Snapshot the ACT state THEN build the payload — keeps the
+            // ACT-coupled extraction separate from the pure transformation
+            // so the latter is unit-testable.
+            var snapshot = CaptureSnapshot(enc);
+            var payload = PayloadBuilder.BuildPayload(ActHelpers.GetLoggingCharacterName(), snapshot);
+            PayloadBuilder.SanitizePayload(payload);
             var json = _serializer.Serialize(payload);
 
             lock (_lock)
@@ -134,10 +131,10 @@ namespace EQ2Lexicon.ACTPlugin
                 }
 
                 LastCapturedEncId = encid;
-                LastCapturedTitle = enc.Title ?? "";
+                LastCapturedTitle = snapshot.Title;
                 LastCapturedAt = DateTime.Now;
-                LastCombatantCount = enc.Items?.Count ?? 0;
-                LastAttackTypeCount = CountAttackTypes(enc);
+                LastCombatantCount = snapshot.Combatants.Count;
+                LastAttackTypeCount = PayloadBuilder.CountAttackTypes(snapshot);
                 LastCapturedPayloadJson = json;
             }
 
@@ -145,324 +142,147 @@ namespace EQ2Lexicon.ACTPlugin
         }
 
         // -------------------------------------------------------------------
-        // Payload construction
+        // ACT → snapshot conversion. Mechanical; the only "logic" here is
+        // pulling fields and using ACT's GetAllies() for the ally split.
         // -------------------------------------------------------------------
 
-        private Dictionary<string, object?> BuildPayload(EncounterData enc)
+        private static EncounterSnapshot CaptureSnapshot(EncounterData enc)
         {
-            return new Dictionary<string, object?>
+            var snap = new EncounterSnapshot
             {
-                ["logger_name"] = ActHelpers.GetLoggingCharacterName(),
-                ["encounter"] = BuildEncounter(enc),
-                ["combatants"] = BuildCombatants(enc),
-                ["damage_types"] = BuildDamageTypes(enc),
-                ["attack_types"] = BuildAttackTypes(enc),
+                EncId = enc.EncId ?? "",
+                Title = enc.Title ?? "",
+                Zone = enc.ZoneName,
+                StartTime = enc.StartTime,
+                EndTime = enc.EndTime,
+                Duration = enc.Duration,
+                Damage = enc.Damage,
+                DPS = enc.DPS,
+                AlliedKills = enc.AlliedKills,
+                AlliedDeaths = enc.AlliedDeaths,
+                SuccessLevel = enc.GetEncounterSuccessLevel(),
             };
-        }
 
-        private Dictionary<string, object?> BuildEncounter(EncounterData enc)
-        {
-            return new Dictionary<string, object?>
-            {
-                ["encid"] = enc.EncId ?? "",
-                ["title"] = enc.Title ?? "",
-                ["zone"] = enc.ZoneName,
-                ["starttime"] = FormatTime(enc.StartTime),
-                ["endtime"] = FormatTime(enc.EndTime),
-                ["duration"] = (int)enc.Duration.TotalSeconds,
-                ["damage"] = enc.Damage,
-                ["encdps"] = enc.DPS,
-                // Previously mis-wired: kills was the success-level enum, and
-                // deaths was AlliedKills. Now using ACT's actual counters.
-                ["kills"] = enc.AlliedKills,
-                ["deaths"] = enc.AlliedDeaths,
-                // ACT's outcome enum. Known values: 0 = unknown / no result,
-                // 1 = allies killed the enemy (win), 2 = enemy killed allies
-                // (loss), 3 = both sides took kills. Frontend uses this to
-                // colour the encounter title on /parses.
-                ["success"] = enc.GetEncounterSuccessLevel(),
-            };
-        }
-
-        private List<Dictionary<string, object?>> BuildCombatants(EncounterData enc)
-        {
-            var result = new List<Dictionary<string, object?>>();
-            if (enc.Items == null) return result;
-
-            // Use ACT's own ally classification (EncounterData.GetAllies()).
-            // The EQ2 ACT parser already attributes pets to their owner, so
-            // they show up in the allies list correctly — no name-shape
-            // heuristics needed.
-            var allyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // ACT's authoritative ally list (already pet-attributed by the
+            // EQ2 parser). If ACT throws we fall through to an empty set →
+            // every combatant marked enemy.
             try
             {
                 foreach (var ally in enc.GetAllies())
                 {
-                    if (ally?.Name != null) allyNames.Add(ally.Name);
+                    if (ally?.Name != null) snap.AllyNames.Add(ally.Name);
                 }
             }
-            catch { /* fall back to all-enemy if ACT throws on this encounter */ }
+            catch { /* swallow */ }
 
-            foreach (var kv in enc.Items)
+            if (enc.Items == null) return snap;
+            foreach (var combatantKv in enc.Items)
             {
-                var c = kv.Value;
+                var c = combatantKv.Value;
                 if (c == null) continue;
-                var name = c.Name ?? "";
-                var isAlly = !string.IsNullOrEmpty(name) && allyNames.Contains(name);
-                result.Add(new Dictionary<string, object?>
+                var cs = new CombatantSnapshot
                 {
-                    ["name"] = name,
-                    ["ally"] = isAlly ? "T" : "F",
-                    ["starttime"] = FormatTime(c.EncStartTime),
-                    ["endtime"] = FormatTime(c.EncEndTime),
-                    ["duration"] = (int)c.Duration.TotalSeconds,
-                    ["damage"] = c.Damage,
-                    ["damageperc"] = c.DamagePercent,
-                    ["kills"] = c.Kills,
-                    ["healed"] = c.Healed,
-                    ["healedperc"] = c.HealedPercent,
-                    ["critheals"] = c.CritHeals,
-                    ["heals"] = c.Heals,
-                    ["curedispels"] = c.CureDispels,
-                    ["powerdrain"] = c.PowerDamage,
-                    ["powerreplenish"] = c.PowerReplenish,
-                    ["dps"] = c.DPS,
-                    ["encdps"] = c.EncDPS,
-                    ["enchps"] = c.EncHPS,
-                    ["hits"] = c.Hits,
-                    ["crithits"] = c.CritHits,
-                    ["blocked"] = c.Blocked,
-                    ["misses"] = c.Misses,
-                    ["swings"] = c.Swings,
-                    ["healstaken"] = c.HealsTaken,
-                    ["damagetaken"] = c.DamageTaken,
-                    ["deaths"] = c.Deaths,
-                    ["tohit"] = c.ToHit,
-                    ["critdamperc"] = c.CritDamPerc,
-                    ["crithealperc"] = c.CritHealPerc,
-                    // crittypes/threatstr/threatdelta aren't exposed cleanly
-                    // on CombatantData at the version we target — server
-                    // accepts these as optional. Revisit in B2.4 polish.
-                    ["crittypes"] = "",
-                    ["threatstr"] = "",
-                    ["threatdelta"] = 0,
-                });
-            }
-            return result;
-        }
+                    Name = c.Name ?? "",
+                    EncStartTime = c.EncStartTime,
+                    EncEndTime = c.EncEndTime,
+                    Duration = c.Duration,
+                    Damage = c.Damage,
+                    DamagePercent = c.DamagePercent ?? "",
+                    Kills = c.Kills,
+                    Healed = c.Healed,
+                    HealedPercent = c.HealedPercent ?? "",
+                    CritHeals = c.CritHeals,
+                    Heals = c.Heals,
+                    CureDispels = c.CureDispels,
+                    PowerDamage = c.PowerDamage,
+                    PowerReplenish = c.PowerReplenish,
+                    DPS = c.DPS,
+                    EncDPS = c.EncDPS,
+                    EncHPS = c.EncHPS,
+                    Hits = c.Hits,
+                    CritHits = c.CritHits,
+                    Blocked = c.Blocked,
+                    Misses = c.Misses,
+                    Swings = c.Swings,
+                    HealsTaken = c.HealsTaken,
+                    DamageTaken = c.DamageTaken,
+                    Deaths = c.Deaths,
+                    ToHit = c.ToHit,
+                    CritDamPerc = c.CritDamPerc,
+                    CritHealPerc = c.CritHealPerc,
+                };
 
-        // Per-category aggregate rollups for the "By Type" tab. ACT exposes
-        // these as combatant.Items[<category>] where each value is a
-        // DamageTypeData with summary stats already aggregated. We send
-        // every category (incoming + outgoing + rollups) — the UI groups
-        // by name and the server stores them verbatim.
-        private List<Dictionary<string, object?>> BuildDamageTypes(EncounterData enc)
-        {
-            var result = new List<Dictionary<string, object?>>();
-            if (enc.Items == null) return result;
-
-            foreach (var combatantKv in enc.Items)
-            {
-                var combatant = combatantKv.Value;
-                if (combatant?.Items == null) continue;
-
-                foreach (var dtKv in combatant.Items)
+                if (c.Items != null)
                 {
-                    var dt = dtKv.Value;
-                    if (dt == null) continue;
-                    var typeName = dtKv.Key ?? dt.Type ?? "";
-                    if (string.IsNullOrEmpty(typeName)) continue;
-                    // ACT pre-populates a row per category per combatant even
-                    // if nothing happened — those rows have StartTime set to
-                    // DateTime.MaxValue ("9999-12-31") and every counter at
-                    // zero. Drop them to keep payloads slim.
-                    if (dt.Damage == 0 && dt.Hits == 0 && dt.Swings == 0
-                        && dt.Misses == 0 && dt.Blocked == 0) continue;
-
-                    result.Add(new Dictionary<string, object?>
+                    foreach (var dtKv in c.Items)
                     {
-                        ["combatant"] = combatant.Name ?? "",
-                        ["grouping"] = "",
-                        ["type"] = typeName,
-                        ["starttime"] = FormatTime(dt.StartTime),
-                        ["endtime"] = FormatTime(dt.EndTime),
-                        ["duration"] = (int)dt.Duration.TotalSeconds,
-                        ["damage"] = dt.Damage,
-                        ["encdps"] = dt.EncDPS,
-                        ["chardps"] = dt.CharDPS,
-                        ["dps"] = dt.DPS,
-                        ["average"] = dt.Average,
-                        ["median"] = dt.Median,
-                        ["minhit"] = dt.MinHit,
-                        ["maxhit"] = dt.MaxHit,
-                        ["hits"] = dt.Hits,
-                        ["crithits"] = dt.CritHits,
-                        ["blocked"] = dt.Blocked,
-                        ["misses"] = dt.Misses,
-                        ["swings"] = dt.Swings,
-                        ["tohit"] = dt.ToHit,
-                        ["averagedelay"] = dt.AverageDelay,
-                        ["critperc"] = dt.CritPerc,
-                        ["crittypes"] = "",
-                    });
-                }
-            }
-            return result;
-        }
+                        var dt = dtKv.Value;
+                        if (dt == null) continue;
+                        var key = dtKv.Key ?? dt.Type ?? "";
+                        if (string.IsNullOrEmpty(key)) continue;
 
-        // ACT's CombatantData.Items dictionary keys identify the category
-        // of each AttackType grouping. The swing_type is implicit in the
-        // category — AttackType itself doesn't expose SwingType as a
-        // property at this version. These values match what ACT's ODBC
-        // export plugin writes into attacktype_table.swingtype.
-        private static readonly Dictionary<string, int> OutgoingGroupToSwingType =
-            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
-        {
-            { "Auto-Attack (Out)", 1 },
-            { "Skill/Ability (Out)", 2 },
-            { "Healed (Out)", 3 },
-            { "Cure/Dispel (Out)", 20 },
-            { "Threat (Out)", 100 },
-            // Skipping aggregate rollups ("Outgoing Damage", "All Outgoing")
-            // and incoming groupings ("Healed (Inc)" etc.) — the latter
-            // would double-count what other combatants already reported as
-            // outgoing.
-        };
-
-        private List<Dictionary<string, object?>> BuildAttackTypes(EncounterData enc)
-        {
-            var result = new List<Dictionary<string, object?>>();
-            if (enc.Items == null) return result;
-
-            foreach (var combatantKv in enc.Items)
-            {
-                var combatant = combatantKv.Value;
-                if (combatant?.Items == null) continue;
-
-                foreach (var groupKv in combatant.Items)
-                {
-                    if (!OutgoingGroupToSwingType.TryGetValue(groupKv.Key, out var swingType))
-                        continue;
-
-                    var attackTypeDict = groupKv.Value;
-                    if (attackTypeDict?.Items == null) continue;
-                    foreach (var atKv in attackTypeDict.Items)
-                    {
-                        var at = atKv.Value;
-                        if (at == null) continue;
-                        // Skip the 'All' rollup row — server filters it anyway,
-                        // but trimming payload size here helps for raid exports.
-                        if (string.Equals(at.Type, "All", StringComparison.OrdinalIgnoreCase)) continue;
-                        // Skip rows where nothing actually happened — ACT
-                        // sometimes records an attack name with zero damage,
-                        // hits, misses, and blocked (e.g. spells that fizzled
-                        // or interrupted). No info value for the UI.
-                        if (at.Damage == 0 && at.Hits == 0 && at.Misses == 0
-                            && at.Blocked == 0) continue;
-
-                        result.Add(new Dictionary<string, object?>
+                        var agg = new DamageTypeAggregate
                         {
-                            ["attacker"] = combatant.Name ?? "",
-                            ["victim"] = "",  // ACT's AttackType doesn't carry a single victim
-                            ["swingtype"] = swingType,
-                            ["type"] = at.Type ?? "",
-                            ["starttime"] = FormatTime(at.StartTime),
-                            ["endtime"] = FormatTime(at.EndTime),
-                            ["duration"] = (int)at.Duration.TotalSeconds,
-                            ["damage"] = at.Damage,
-                            ["encdps"] = at.EncDPS,
-                            ["chardps"] = at.CharDPS,
-                            ["dps"] = at.DPS,
-                            ["average"] = at.Average,
-                            ["median"] = at.Median,
-                            ["minhit"] = at.MinHit,
-                            ["maxhit"] = at.MaxHit,
-                            ["resist"] = at.Resist ?? "",
-                            ["hits"] = at.Hits,
-                            ["crithits"] = at.CritHits,
-                            ["blocked"] = at.Blocked,
-                            ["misses"] = at.Misses,
-                            ["swings"] = at.Swings,
-                            ["tohit"] = at.ToHit,
-                            ["averagedelay"] = at.AverageDelay,
-                            ["critperc"] = at.CritPerc,
-                            ["crittypes"] = "",  // not exposed on AttackType
-                        });
+                            Type = dt.Type ?? key,
+                            StartTime = dt.StartTime,
+                            EndTime = dt.EndTime,
+                            Duration = dt.Duration,
+                            Damage = dt.Damage,
+                            EncDPS = dt.EncDPS,
+                            CharDPS = dt.CharDPS,
+                            DPS = dt.DPS,
+                            Average = dt.Average,
+                            Median = dt.Median,
+                            MinHit = dt.MinHit,
+                            MaxHit = dt.MaxHit,
+                            Hits = dt.Hits,
+                            CritHits = dt.CritHits,
+                            Blocked = dt.Blocked,
+                            Misses = dt.Misses,
+                            Swings = dt.Swings,
+                            ToHit = dt.ToHit,
+                            AverageDelay = dt.AverageDelay,
+                            CritPerc = dt.CritPerc,
+                        };
+
+                        if (dt.Items != null)
+                        {
+                            foreach (var atKv in dt.Items)
+                            {
+                                var at = atKv.Value;
+                                if (at == null) continue;
+                                agg.Attacks.Add(new AttackTypeSnapshot
+                                {
+                                    Type = at.Type ?? "",
+                                    StartTime = at.StartTime,
+                                    EndTime = at.EndTime,
+                                    Duration = at.Duration,
+                                    Damage = at.Damage,
+                                    EncDPS = at.EncDPS,
+                                    CharDPS = at.CharDPS,
+                                    DPS = at.DPS,
+                                    Average = at.Average,
+                                    Median = at.Median,
+                                    MinHit = at.MinHit,
+                                    MaxHit = at.MaxHit,
+                                    Resist = at.Resist ?? "",
+                                    Hits = at.Hits,
+                                    CritHits = at.CritHits,
+                                    Blocked = at.Blocked,
+                                    Misses = at.Misses,
+                                    Swings = at.Swings,
+                                    ToHit = at.ToHit,
+                                    AverageDelay = at.AverageDelay,
+                                    CritPerc = at.CritPerc,
+                                });
+                            }
+                        }
+                        cs.DamageTypeAggregates[key] = agg;
                     }
                 }
+                snap.Combatants.Add(cs);
             }
-            return result;
-        }
-
-        private int CountAttackTypes(EncounterData enc)
-        {
-            if (enc.Items == null) return 0;
-            int count = 0;
-            foreach (var c in enc.Items.Values)
-            {
-                if (c?.Items == null) continue;
-                foreach (var groupKv in c.Items)
-                {
-                    if (!OutgoingGroupToSwingType.ContainsKey(groupKv.Key)) continue;
-                    var attackTypeDict = groupKv.Value;
-                    if (attackTypeDict?.Items == null) continue;
-                    foreach (var at in attackTypeDict.Items.Values)
-                    {
-                        if (at != null && !string.Equals(at.Type, "All", StringComparison.OrdinalIgnoreCase))
-                            count++;
-                    }
-                }
-            }
-            return count;
-        }
-
-        private static string FormatTime(DateTime t)
-        {
-            if (t == DateTime.MinValue) return "";
-            // ACT's DateTime comes from the EQ2 log line, which is written in
-            // the player's local clock. Convert to UTC and tag with a 'Z'
-            // suffix so the server can store an absolute timestamp — without
-            // this, cross-timezone viewers would see times shifted by the
-            // uploader's local-vs-UTC offset. ToUniversalTime() treats Kind
-            // == Unspecified as Local, which is what we want here.
-            var utc = t.Kind == DateTimeKind.Utc ? t : t.ToUniversalTime();
-            return utc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
-        }
-
-        // -------------------------------------------------------------------
-        // NaN / Infinity scrubber. ACT returns NaN for any computed stat that
-        // divided by zero (a miss-only attempt → average = 0/0). The .NET
-        // JavaScriptSerializer happily emits the literal "NaN" — but that's
-        // invalid JSON, so the server's json.loads will reject the upload.
-        // Walk the payload once and swap any non-finite double for 0.
-        // -------------------------------------------------------------------
-
-        private static void SanitizePayload(object? node)
-        {
-            if (node is IDictionary<string, object?> dict)
-            {
-                var keys = new List<string>(dict.Keys);
-                foreach (var key in keys)
-                {
-                    var v = dict[key];
-                    if (v is double d && (double.IsNaN(d) || double.IsInfinity(d)))
-                    {
-                        dict[key] = 0.0;
-                    }
-                    else if (v is float f && (float.IsNaN(f) || float.IsInfinity(f)))
-                    {
-                        dict[key] = 0f;
-                    }
-                    else
-                    {
-                        SanitizePayload(v);
-                    }
-                }
-            }
-            else if (node is System.Collections.IList list)
-            {
-                foreach (var item in list) SanitizePayload(item);
-            }
+            return snap;
         }
     }
 }

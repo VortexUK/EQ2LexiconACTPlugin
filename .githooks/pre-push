@@ -1,0 +1,51 @@
+#!/bin/sh
+# Pre-push checks — runs automatically before every `git push`.
+# Activate once with:  git config core.hooksPath .githooks
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+RESET='\033[0m'
+
+echo ""
+echo "${CYAN}Running pre-push checks…${RESET}"
+echo ""
+
+if ! command -v dotnet >/dev/null 2>&1; then
+  echo "${RED}✗ dotnet CLI is not on PATH. Install the .NET 8 SDK: https://dotnet.microsoft.com/download${RESET}"
+  exit 1
+fi
+
+SLN="EQ2Lexicon.ACTPlugin.sln"
+
+# ── 1. Format check (.editorconfig is the source of truth) ───────────────────
+echo "${CYAN}→ dotnet format --verify-no-changes${RESET}"
+if ! dotnet format "$SLN" --verify-no-changes --verbosity quiet; then
+  echo ""
+  echo "${RED}✗ Formatting issues found. Run: dotnet format ${SLN}${RESET}"
+  exit 1
+fi
+echo "${GREEN}  ✓ format OK${RESET}"
+
+# ── 2. Compile (acts as the type checker for C#) ─────────────────────────────
+echo "${CYAN}→ dotnet build (Release)${RESET}"
+if ! dotnet build "$SLN" -c Release --verbosity quiet --nologo; then
+  echo ""
+  echo "${RED}✗ Build failed. Push aborted.${RESET}"
+  exit 1
+fi
+echo "${GREEN}  ✓ build OK${RESET}"
+
+# ── 3. Tests ─────────────────────────────────────────────────────────────────
+echo "${CYAN}→ dotnet test${RESET}"
+if ! dotnet test "$SLN" --no-build -c Release --nologo --verbosity quiet; then
+  echo ""
+  echo "${RED}✗ Tests failed. Push aborted.${RESET}"
+  exit 1
+fi
+echo "${GREEN}  ✓ tests OK${RESET}"
+
+echo ""
+echo "${GREEN}All checks passed.${RESET}"
+echo ""

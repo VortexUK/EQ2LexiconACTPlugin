@@ -22,27 +22,27 @@ namespace EQ2Lexicon.ACTPlugin
         // future light-mode swap is one block to change.
         private static class T
         {
-            public static readonly Color Bg          = Color.FromArgb(30, 33, 40);    // page bg
-            public static readonly Color Card        = Color.FromArgb(38, 42, 51);    // card bg
-            public static readonly Color CardBorder  = Color.FromArgb(58, 63, 74);
-            public static readonly Color Text        = Color.FromArgb(216, 216, 216); // body
-            public static readonly Color TextMuted   = Color.FromArgb(140, 145, 155); // hints / captions
-            public static readonly Color Gold        = Color.FromArgb(216, 166, 87);  // brand accent
-            public static readonly Color GoldSoft    = Color.FromArgb(184, 142, 75);
-            public static readonly Color Success     = Color.FromArgb(102, 187, 106);
-            public static readonly Color Warning     = Color.FromArgb(255, 193, 88);
-            public static readonly Color Danger      = Color.FromArgb(229, 115, 115);
-            public static readonly Color InputBg     = Color.FromArgb(24, 27, 33);
+            public static readonly Color Bg = Color.FromArgb(30, 33, 40);    // page bg
+            public static readonly Color Card = Color.FromArgb(38, 42, 51);    // card bg
+            public static readonly Color CardBorder = Color.FromArgb(58, 63, 74);
+            public static readonly Color Text = Color.FromArgb(216, 216, 216); // body
+            public static readonly Color TextMuted = Color.FromArgb(140, 145, 155); // hints / captions
+            public static readonly Color Gold = Color.FromArgb(216, 166, 87);  // brand accent
+            public static readonly Color GoldSoft = Color.FromArgb(184, 142, 75);
+            public static readonly Color Success = Color.FromArgb(102, 187, 106);
+            public static readonly Color Warning = Color.FromArgb(255, 193, 88);
+            public static readonly Color Danger = Color.FromArgb(229, 115, 115);
+            public static readonly Color InputBg = Color.FromArgb(24, 27, 33);
             public static readonly Color InputBorder = Color.FromArgb(74, 79, 90);
-            public static readonly Color ButtonBg    = Color.FromArgb(54, 60, 72);
+            public static readonly Color ButtonBg = Color.FromArgb(54, 60, 72);
             public static readonly Color ButtonHover = Color.FromArgb(72, 80, 96);
-            public static readonly Color PrimaryBg   = Color.FromArgb(216, 166, 87);
-            public static readonly Color PrimaryFg   = Color.FromArgb(20, 22, 28);
+            public static readonly Color PrimaryBg = Color.FromArgb(216, 166, 87);
+            public static readonly Color PrimaryFg = Color.FromArgb(20, 22, 28);
             public static readonly Color PrimaryHover = Color.FromArgb(232, 184, 110);
         }
 
-        private const int CardWidth  = 620;
-        private const int CardPad    = 16;
+        private const int CardWidth = 620;
+        private const int CardPad = 16;
         private const int InputWidth = CardWidth - (CardPad * 2);
 
         private readonly PluginConfig _config;

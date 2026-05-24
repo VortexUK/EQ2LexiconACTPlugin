@@ -1,0 +1,28 @@
+root = true
+
+# All files
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+# C# source
+[*.cs]
+indent_size = 4
+csharp_new_line_before_open_brace = all
+csharp_indent_braces = false
+csharp_indent_case_contents = true
+csharp_indent_switch_labels = true
+
+# Treat formatting as errors so `dotnet format --verify-no-changes` fails
+# loudly in CI / pre-push rather than printing a warning that gets ignored.
+dotnet_diagnostic.IDE0055.severity = error
+
+# Project / config files
+[*.{csproj,sln,props,targets}]
+indent_size = 2
+
+[*.{json,yml,yaml,md,toml}]
+indent_size = 2

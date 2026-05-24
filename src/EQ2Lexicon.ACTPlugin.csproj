@@ -45,4 +45,11 @@
       Text="Advanced Combat Tracker.exe not found at '$(ActInstallDir)'. Set the ACT_INSTALL_DIR environment variable to your ACT install directory and rebuild." />
   </Target>
 
+  <!-- Test project sees `internal` helpers (UploadClient.ExtractJsonString, etc.). -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>EQ2Lexicon.ACTPlugin.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
 </Project>

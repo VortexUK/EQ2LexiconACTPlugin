@@ -45,12 +45,54 @@ Restart ACT. In **Plugins → Plugin Listing**, the "EQ2 Lexicon Uploader" shoul
 ## Project layout
 
 ```
-EQ2Lexicon.ACTPlugin.sln       # solution file for Visual Studio users
+EQ2Lexicon.ACTPlugin.sln               # solution file for Visual Studio users
 src/
-  EQ2Lexicon.ACTPlugin.csproj  # net48 class library, references ACT.exe
-  Plugin.cs                    # IActPluginV1 entry point (scaffold today,
-                               #   gets the encounter hook + UI in later commits)
+  EQ2Lexicon.ACTPlugin.csproj          # net48 class library, references ACT.exe
+  Plugin.cs                            # IActPluginV1 entry point
+  SettingsPanel.cs                     # dark-themed settings UI
+  EncounterCapture.cs                  # 2 s polling + ACT → snapshot adapter
+  PayloadBuilder.cs                    # pure snapshot → ingest-JSON transform
+  Snapshots.cs                         # DTOs decoupling payload logic from ACT
+  PluginConfig.cs                      # XML-serialised user settings
+  UploadClient.cs                      # HttpClient wrapper + JSON helpers
+  ActHelpers.cs                        # ActGlobals shims (logger char name)
+tests/
+  EQ2Lexicon.ACTPlugin.Tests/          # xUnit, targets net48
+.editorconfig                          # source of truth for dotnet format
+.githooks/pre-push                     # format + build + test on every push
 ```
+
+## Running checks locally
+
+The pre-push hook runs three checks. **Activate it once after cloning:**
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+After that, every `git push` runs:
+
+| Step | Command |
+|------|---------|
+| Format check | `dotnet format EQ2Lexicon.ACTPlugin.sln --verify-no-changes` |
+| Build (acts as type-check) | `dotnet build EQ2Lexicon.ACTPlugin.sln -c Release` |
+| Tests | `dotnet test EQ2Lexicon.ACTPlugin.sln --no-build -c Release` |
+
+To fix formatting issues:
+
+```powershell
+dotnet format EQ2Lexicon.ACTPlugin.sln
+```
+
+To run the tests on their own:
+
+```powershell
+dotnet test
+```
+
+The test suite covers `PayloadBuilder` (encounter/combatant/damage-type/attack-type shape, NaN sanitiser, UTC formatter), `PluginConfig` (defaults, IsBlacklisted, XML round-trip), and `UploadClient`'s JSON / truncate helpers.
+
+The ACT-coupled bits (`EncounterCapture.CaptureSnapshot`, `SettingsPanel`, `Plugin`) aren't unit-tested — they're integration-tested by running the DLL in ACT.
 
 ## License
 

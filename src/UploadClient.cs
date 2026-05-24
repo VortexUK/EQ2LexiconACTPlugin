@@ -171,7 +171,7 @@ namespace EQ2Lexicon.ACTPlugin
         // parser just for one field. NOT a general-purpose JSON parser.
         // -------------------------------------------------------------------
 
-        private static string? ExtractJsonString(string json, string fieldName)
+        internal static string? ExtractJsonString(string json, string fieldName)
         {
             if (string.IsNullOrEmpty(json)) return null;
             var marker = $"\"{fieldName}\"";
@@ -199,7 +199,7 @@ namespace EQ2Lexicon.ACTPlugin
             return null;
         }
 
-        private static string Truncate(string s, int max)
+        internal static string Truncate(string s, int max)
         {
             if (string.IsNullOrEmpty(s)) return "";
             return s.Length <= max ? s : s.Substring(0, max) + "…";
