@@ -302,10 +302,15 @@ namespace EQ2Lexicon.ACTPlugin
                 _testStatusLabel.ForeColor = result.Success ? T.Success : T.Danger;
                 _testStatusLabel.Text = (result.Success ? "✓ " : "✗ ") + result.Message;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
+                // TestConnectionAsync already wraps the expected exception
+                // types (TaskCanceled / HttpRequest) into a Result. If
+                // something else escapes, surface a generic message rather
+                // than leaking implementation details (stack traces, type
+                // names) into the user-visible status label.
                 _testStatusLabel.ForeColor = T.Danger;
-                _testStatusLabel.Text = "✗ Test failed: " + ex.Message;
+                _testStatusLabel.Text = "✗ Unexpected error during test.";
             }
             finally
             {

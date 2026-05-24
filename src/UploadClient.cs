@@ -40,14 +40,55 @@ namespace EQ2Lexicon.ACTPlugin
         }
 
         /// <summary>
+        /// Hard cap for the upload body. JavaScriptSerializer caps at 8 MB
+        /// on the build side, but we belt-and-brace it here so an unexpected
+        /// caller (or a corrupted snapshot) can't push a multi-hundred-MB
+        /// body over the wire.
+        /// </summary>
+        private const int MaxPayloadBytes = 10 * 1024 * 1024;
+
+        /// <summary>
+        /// Validates the user-entered server URL. Returns null when OK, or a
+        /// human-readable error string when not. Allows https:// anywhere and
+        /// http:// only for localhost (so a self-hosted dev backend on the
+        /// loopback still works). Rejects other schemes (`file://`,
+        /// `javascript:`, etc.) and malformed URIs — those would otherwise
+        /// either leak the bearer token in plaintext or feed garbage to
+        /// HttpClient.
+        /// </summary>
+        internal static string? ValidateServerUrl(string? serverUrl)
+        {
+            if (string.IsNullOrWhiteSpace(serverUrl))
+                return "Server URL is empty.";
+            Uri? uri;
+            try
+            {
+                uri = new Uri(serverUrl, UriKind.Absolute);
+            }
+            catch (UriFormatException)
+            {
+                return "Server URL is malformed.";
+            }
+            if (uri.Scheme == Uri.UriSchemeHttps) return null;
+            if (uri.Scheme == Uri.UriSchemeHttp)
+            {
+                var host = uri.Host.ToLowerInvariant();
+                if (host == "localhost" || host == "127.0.0.1" || host == "[::1]")
+                    return null;
+                return "Server URL must use https:// (plain http is only allowed for localhost).";
+            }
+            return $"Server URL scheme '{uri.Scheme}' not supported — use https://.";
+        }
+
+        /// <summary>
         /// GET /api/auth/whoami with the bearer token. Returns Success=true
         /// when the server resolves the token to a user, with Message
         /// containing the resolved Discord name.
         /// </summary>
         public async Task<Result> TestConnectionAsync(string serverUrl, string apiToken)
         {
-            if (string.IsNullOrWhiteSpace(serverUrl))
-                return new Result { Message = "Server URL is empty." };
+            var urlError = ValidateServerUrl(serverUrl);
+            if (urlError != null) return new Result { Message = urlError };
             if (string.IsNullOrWhiteSpace(apiToken))
                 return new Result { Message = "API token is empty." };
 
@@ -105,12 +146,17 @@ namespace EQ2Lexicon.ACTPlugin
         /// </summary>
         public async Task<Result> UploadEncounterAsync(string serverUrl, string apiToken, string payloadJson)
         {
-            if (string.IsNullOrWhiteSpace(serverUrl))
-                return new Result { Message = "Server URL is empty." };
+            var urlError = ValidateServerUrl(serverUrl);
+            if (urlError != null) return new Result { Message = urlError };
             if (string.IsNullOrWhiteSpace(apiToken))
                 return new Result { Message = "API token is empty." };
             if (string.IsNullOrWhiteSpace(payloadJson))
                 return new Result { Message = "Payload is empty." };
+            if (payloadJson.Length > MaxPayloadBytes)
+                return new Result
+                {
+                    Message = $"Payload too large ({payloadJson.Length} bytes; cap is {MaxPayloadBytes}).",
+                };
 
             var url = serverUrl.TrimEnd('/') + "/api/parses/ingest";
 
