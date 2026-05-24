@@ -21,7 +21,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # global.json pins the SDK version; setup-dotnet will read it.
       - name: Setup .NET SDK
