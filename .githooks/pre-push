@@ -46,6 +46,23 @@ if ! dotnet test "$SLN" --no-build -c Release --nologo --verbosity quiet; then
 fi
 echo "${GREEN}  ✓ tests OK${RESET}"
 
+# ── 4. Vulnerability scan ────────────────────────────────────────────────────
+# `dotnet list package --vulnerable` returns exit 0 even when CVEs are
+# present (it considers the listing itself a success), so we grep the
+# output for the canonical "has the following vulnerable packages" line
+# that only appears when something is found.
+echo "${CYAN}→ Vulnerability scan (dotnet list package --vulnerable)${RESET}"
+VULN_OUTPUT=$(dotnet list "$SLN" package --vulnerable --include-transitive 2>&1 || true)
+if echo "$VULN_OUTPUT" | grep -q "has the following vulnerable packages"; then
+  echo ""
+  echo "${RED}✗ Vulnerable packages found:${RESET}"
+  echo "$VULN_OUTPUT" | grep -E "(Project|>|has the)"
+  echo ""
+  echo "${RED}Run: dotnet list package --vulnerable --include-transitive${RESET}"
+  exit 1
+fi
+echo "${GREEN}  ✓ no known vulnerabilities${RESET}"
+
 echo ""
 echo "${GREEN}All checks passed.${RESET}"
 echo ""

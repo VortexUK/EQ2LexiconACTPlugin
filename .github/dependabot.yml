@@ -1,0 +1,26 @@
+# Auto-PRs from Dependabot when our deps publish updates. Cheap insurance
+# against falling behind on security patches in xUnit / Microsoft.NET.Test.Sdk
+# / the test runner.
+
+version: 2
+updates:
+  # NuGet packages (test project — production plugin has no NuGet deps).
+  - package-ecosystem: "nuget"
+    directory: "/tests/EQ2Lexicon.ACTPlugin.Tests"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["deps", "nuget"]
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
+  # GitHub Actions versions (when we add CI workflows).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["deps", "ci"]
+    commit-message:
+      prefix: "ci"
+      include: "scope"
