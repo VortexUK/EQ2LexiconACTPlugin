@@ -32,7 +32,7 @@ The server response is parsed by a deliberately narrow hand-rolled `ExtractJsonS
 
 - Anything that requires existing code execution on the user's machine
 - Vulnerabilities in ACT itself (report those to [EQAditu/AdvancedCombatTracker](https://github.com/EQAditu/AdvancedCombatTracker))
-- Vulnerabilities in the EQ2 Lexicon server (those belong in [VortexUK/EQ2CensusBot](https://github.com/VortexUK/EQ2CensusBot))
+- Vulnerabilities in the EQ2 Lexicon server (those belong in [VortexUK/EQ2Lexicon](https://github.com/VortexUK/EQ2Lexicon))
 - SmartScreen warnings on first install (the DLL is unsigned by design)
 
 ## Past security audits

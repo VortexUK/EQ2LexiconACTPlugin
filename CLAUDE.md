@@ -4,7 +4,7 @@
 
 A .NET Framework 4.8 class library that ACT (Advanced Combat Tracker) loads as a plugin. Watches the active zone for finished EverQuest 2 encounters, builds an ACT-shaped JSON payload, and POSTs it to the EQ2 Lexicon site (`https://eq2lexicon.up.railway.app/api/parses/ingest`) under the user's API token. The site stores the parse and surfaces it under their guild on `/parses`.
 
-Companion repo: [VortexUK/EQ2CensusBot](https://github.com/VortexUK/EQ2CensusBot) — the FastAPI + React site that owns the ingest endpoint, persistence, mirror grouping, and delete permissions.
+Companion repo: [VortexUK/EQ2Lexicon](https://github.com/VortexUK/EQ2Lexicon) — the FastAPI + React site that owns the ingest endpoint, persistence, mirror grouping, and delete permissions.
 
 ## Architecture
 

@@ -39,7 +39,7 @@ body:
       label: Where does this live?
       options:
         - Plugin (this repo)
-        - EQ2 Lexicon website (EQ2CensusBot repo)
+        - EQ2 Lexicon website (EQ2Lexicon repo)
         - Not sure
     validations:
       required: true

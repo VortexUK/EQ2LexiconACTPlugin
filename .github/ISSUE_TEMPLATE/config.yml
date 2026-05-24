@@ -4,5 +4,5 @@ contact_links:
     url: https://github.com/VortexUK/EQ2LexiconACTPlugin/security/advisories/new
     about: Report a security issue privately. Do not file a public issue.
   - name: EQ2 Lexicon website issue
-    url: https://github.com/VortexUK/EQ2CensusBot/issues
-    about: Issues with the website, account, or guild detection belong in the EQ2CensusBot repo.
+    url: https://github.com/VortexUK/EQ2Lexicon/issues
+    about: Issues with the website, account, or guild detection belong in the EQ2Lexicon repo.
