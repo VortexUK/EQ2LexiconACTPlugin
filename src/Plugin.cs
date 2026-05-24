@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Advanced_Combat_Tracker;
 
@@ -15,6 +16,8 @@ namespace EQ2Lexicon.ACTPlugin
         private TabPage? _pluginTab;
         private PluginConfig? _config;
         private SettingsPanel? _settingsPanel;
+        private EncounterCapture? _capture;
+        private UploadClient? _uploadClient;
 
         public void InitPlugin(TabPage pluginScreenSpace, Label pluginStatusText)
         {
@@ -35,14 +38,26 @@ namespace EQ2Lexicon.ACTPlugin
                 SetStatus("Config load error: " + ex.Message, isError: true);
             }
 
-            _settingsPanel = new SettingsPanel(_config, OnConfigSaved);
+            _uploadClient = new UploadClient();
+            _settingsPanel = new SettingsPanel(_config, OnConfigSaved, _uploadClient);
             _pluginTab.Controls.Add(_settingsPanel);
+
+            // Encounter capture: polls every 2s for newly-closed encounters
+            // and builds the upload payload. No HTTP yet — surfaced to the
+            // UI for verification.
+            _capture = new EncounterCapture();
+            _settingsPanel.GetLastCapturedPayloadJson = () => _capture?.LastCapturedPayloadJson ?? "";
+            _capture.OnCaptured += OnEncounterCaptured;
 
             UpdateStatusFromConfig();
         }
 
         public void DeInitPlugin()
         {
+            _capture?.Dispose();
+            _capture = null;
+            _uploadClient?.Dispose();
+            _uploadClient = null;
             _pluginTab?.Controls.Clear();
             SetStatus("EQ2 Lexicon: unloaded");
         }
@@ -55,6 +70,57 @@ namespace EQ2Lexicon.ACTPlugin
         {
             _config = config;
             UpdateStatusFromConfig();
+        }
+
+        private void OnEncounterCaptured()
+        {
+            if (_capture == null || _settingsPanel == null) return;
+            _settingsPanel.RefreshLastCaptured(
+                _capture.LastCapturedEncId,
+                _capture.LastCapturedTitle,
+                _capture.LastCapturedAt,
+                _capture.LastCombatantCount,
+                _capture.LastAttackTypeCount);
+
+            // Decide whether to upload. Skip reasons get surfaced in the
+            // settings panel so the user knows nothing was sent (and why).
+            if (_config == null || _uploadClient == null) return;
+
+            if (!_config.UploadEnabled)
+            {
+                _settingsPanel.SetUploadStatus("skipped (uploads disabled)", success: false);
+                return;
+            }
+            var charName = ActHelpers.GetLoggingCharacterName();
+            if (!string.IsNullOrWhiteSpace(charName) && _config.IsBlacklisted(charName))
+            {
+                _settingsPanel.SetUploadStatus($"skipped ({charName} is blacklisted)", success: false);
+                return;
+            }
+
+            var url = _config.ServerUrl;
+            var token = _config.ApiToken;
+            var json = _capture.LastCapturedPayloadJson;
+            if (string.IsNullOrEmpty(json))
+            {
+                _settingsPanel.SetUploadStatus("skipped (no payload built)", success: false);
+                return;
+            }
+
+            // Fire-and-forget upload. The HttpClient handles concurrent
+            // requests, so back-to-back encounters won't step on each other.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var result = await _uploadClient.UploadEncounterAsync(url, token, json);
+                    _settingsPanel?.SetUploadStatus(result.Message, result.Success);
+                }
+                catch (Exception ex)
+                {
+                    _settingsPanel?.SetUploadStatus("error: " + ex.Message, success: false);
+                }
+            });
         }
 
         private void UpdateStatusFromConfig()

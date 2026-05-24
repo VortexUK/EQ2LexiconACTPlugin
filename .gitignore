@@ -23,6 +23,9 @@ artifacts/
 *.pdb
 release/
 
+# Local debugging artifacts (sample payloads, scratch scripts)
+dev/
+
 # OS junk
 Thumbs.db
 .DS_Store

@@ -18,6 +18,7 @@ namespace EQ2Lexicon.ACTPlugin
     {
         private readonly PluginConfig _config;
         private readonly Action<PluginConfig> _onSave;
+        private readonly UploadClient _uploadClient;
 
         private readonly TextBox _serverUrl;
         private readonly TextBox _apiToken;
@@ -25,11 +26,21 @@ namespace EQ2Lexicon.ACTPlugin
         private readonly TextBox _blacklist;
         private readonly Label _currentCharLabel;
         private readonly Label _statusLabel;
+        private readonly Button _testConnectionBtn;
+        private readonly Label _captureLabel;
+        private readonly Button _showPayloadBtn;
+        private readonly Label _uploadStatusLabel;
 
-        public SettingsPanel(PluginConfig config, Action<PluginConfig> onSave)
+        // Updated by the Plugin when a new encounter is captured. Held as a
+        // delegate so we don't take a hard reference on EncounterCapture from
+        // the UI layer.
+        public Func<string>? GetLastCapturedPayloadJson { get; set; }
+
+        public SettingsPanel(PluginConfig config, Action<PluginConfig> onSave, UploadClient uploadClient)
         {
             _config = config;
             _onSave = onSave;
+            _uploadClient = uploadClient;
 
             Dock = DockStyle.Fill;
             Padding = new Padding(16);
@@ -153,6 +164,16 @@ namespace EQ2Lexicon.ACTPlugin
             saveBtn.Click += OnSaveClicked;
             buttonRow.Controls.Add(saveBtn);
 
+            _testConnectionBtn = new Button
+            {
+                Text = "Test connection",
+                AutoSize = true,
+                Padding = new Padding(8, 4, 8, 4),
+                Margin = new Padding(8, 0, 0, 0),
+            };
+            _testConnectionBtn.Click += OnTestConnectionClicked;
+            buttonRow.Controls.Add(_testConnectionBtn);
+
             _statusLabel = new Label
             {
                 AutoSize = true,
@@ -164,7 +185,128 @@ namespace EQ2Lexicon.ACTPlugin
 
             layout.Controls.Add(buttonRow);
 
+            // Spacer
+            var spacer = new Label { AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
+            layout.Controls.Add(spacer);
+            layout.SetColumnSpan(spacer, 2);
+
+            // ── Last captured ──
+            var captureHeader = new Label
+            {
+                Text = "Last captured encounter",
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                AutoSize = true,
+                Margin = new Padding(0, 8, 0, 4),
+            };
+            layout.Controls.Add(captureHeader);
+            layout.SetColumnSpan(captureHeader, 2);
+
+            layout.Controls.Add(new Label { AutoSize = true });
+            var captureRow = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                FlowDirection = FlowDirection.LeftToRight,
+                Margin = new Padding(0),
+            };
+            _captureLabel = new Label
+            {
+                AutoSize = true,
+                MaximumSize = new Size(520, 0),
+                Text = "(nothing captured yet — finish an encounter in EQ2)",
+                ForeColor = SystemColors.GrayText,
+                Margin = new Padding(0, 4, 12, 0),
+            };
+            captureRow.Controls.Add(_captureLabel);
+
+            _showPayloadBtn = new Button
+            {
+                Text = "Show payload",
+                AutoSize = true,
+                Padding = new Padding(8, 4, 8, 4),
+                Enabled = false,
+            };
+            _showPayloadBtn.Click += OnShowPayloadClicked;
+            captureRow.Controls.Add(_showPayloadBtn);
+
+            _uploadStatusLabel = new Label
+            {
+                AutoSize = true,
+                MaximumSize = new Size(520, 0),
+                Margin = new Padding(12, 8, 0, 0),
+                ForeColor = SystemColors.GrayText,
+                Text = "",
+            };
+            captureRow.Controls.Add(_uploadStatusLabel);
+
+            layout.Controls.Add(captureRow);
+
             Controls.Add(layout);
+        }
+
+        /// <summary>
+        /// Called from the Plugin (off the UI thread) when EncounterCapture
+        /// has new data ready. We marshal to the UI thread to refresh the
+        /// label and enable the show-payload button.
+        /// </summary>
+        public void RefreshLastCaptured(string encId, string title, DateTime at, int combatants, int attackTypes)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke((Action)(() => RefreshLastCaptured(encId, title, at, combatants, attackTypes)));
+                return;
+            }
+            _captureLabel.Text =
+                $"{encId}  ·  {(string.IsNullOrEmpty(title) ? "(no title)" : title)}\r\n" +
+                $"{combatants} combatant{(combatants == 1 ? "" : "s")}, " +
+                $"{attackTypes} attack type{(attackTypes == 1 ? "" : "s")}  ·  " +
+                $"captured {at:HH:mm:ss}";
+            _captureLabel.ForeColor = SystemColors.ControlText;
+            _showPayloadBtn.Enabled = !string.IsNullOrEmpty(encId);
+            // New capture: clear any stale upload status until the upload
+            // attempt (or skip reason) reports back.
+            _uploadStatusLabel.Text = "";
+        }
+
+        /// <summary>
+        /// Surface the result of an upload attempt (or the reason we skipped
+        /// it — e.g. uploads disabled, blacklisted character). Marshals to
+        /// the UI thread for callers on worker threads.
+        /// </summary>
+        public void SetUploadStatus(string message, bool success)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke((Action)(() => SetUploadStatus(message, success)));
+                return;
+            }
+            _uploadStatusLabel.Text = $"Upload: {message}  ·  {DateTime.Now:HH:mm:ss}";
+            _uploadStatusLabel.ForeColor = success ? Color.DarkGreen : Color.DarkRed;
+        }
+
+        private void OnShowPayloadClicked(object sender, EventArgs e)
+        {
+            var json = GetLastCapturedPayloadJson?.Invoke() ?? "(no payload available)";
+            using (var dlg = new Form
+            {
+                Text = "Last captured payload",
+                Width = 900,
+                Height = 600,
+                StartPosition = FormStartPosition.CenterParent,
+            })
+            {
+                var tb = new TextBox
+                {
+                    Multiline = true,
+                    ReadOnly = true,
+                    ScrollBars = ScrollBars.Both,
+                    WordWrap = false,
+                    Dock = DockStyle.Fill,
+                    Font = new Font(FontFamily.GenericMonospace, 9),
+                    Text = json,
+                };
+                dlg.Controls.Add(tb);
+                dlg.ShowDialog(this);
+            }
         }
 
         private static Label MakeLabel(string text)
@@ -187,6 +329,42 @@ namespace EQ2Lexicon.ACTPlugin
                 Width = 520,
                 Margin = new Padding(0, 4, 0, 4),
             };
+        }
+
+        private async void OnTestConnectionClicked(object sender, EventArgs e)
+        {
+            // Use current TextBox values, not the saved config — lets the user
+            // verify an edit before committing it via Save.
+            var url = (_serverUrl.Text ?? "").Trim().TrimEnd('/');
+            var token = (_apiToken.Text ?? "").Trim();
+
+            _testConnectionBtn.Enabled = false;
+            _statusLabel.ForeColor = SystemColors.GrayText;
+            _statusLabel.Text = "Testing connection…";
+
+            try
+            {
+                var result = await _uploadClient.TestConnectionAsync(url, token);
+                if (result.Success)
+                {
+                    _statusLabel.ForeColor = Color.DarkGreen;
+                    _statusLabel.Text = result.Message;
+                }
+                else
+                {
+                    _statusLabel.ForeColor = Color.DarkRed;
+                    _statusLabel.Text = result.Message;
+                }
+            }
+            catch (Exception ex)
+            {
+                _statusLabel.ForeColor = Color.DarkRed;
+                _statusLabel.Text = "Test failed: " + ex.Message;
+            }
+            finally
+            {
+                _testConnectionBtn.Enabled = true;
+            }
         }
 
         private void OnSaveClicked(object sender, EventArgs e)

@@ -15,7 +15,7 @@ namespace EQ2Lexicon.ACTPlugin
     public class PluginConfig
     {
         /// <summary>Base URL of the EQ2 Lexicon site (no trailing slash).</summary>
-        public string ServerUrl { get; set; } = "https://eq2censusbot.up.railway.app";
+        public string ServerUrl { get; set; } = "https://eq2lexicon.up.railway.app";
 
         /// <summary>API token from /settings/tokens. Treat as a password.</summary>
         public string ApiToken { get; set; } = "";
