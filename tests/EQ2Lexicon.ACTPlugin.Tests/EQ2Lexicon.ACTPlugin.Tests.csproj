@@ -19,7 +19,7 @@
       into the TestResults/ folder, which the CI job then feeds to
       ReportGenerator for the HTML summary.
     -->
-    <PackageReference Include="coverlet.collector" Version="6.0.2" />
+    <PackageReference Include="coverlet.collector" Version="10.0.1" />
   </ItemGroup>
 
   <ItemGroup>
