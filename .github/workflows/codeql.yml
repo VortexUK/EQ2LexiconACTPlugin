@@ -50,9 +50,13 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: csharp
-          # security-and-quality includes the standard security queries
-          # plus the broader quality ruleset.
-          queries: security-and-quality
+          # security-extended = the broader security ruleset without
+          # the quality/style noise (missed-LINQ, catch-of-all-exceptions,
+          # virtual-call-in-constructor, etc.). We intentionally catch
+          # general Exception in several defensive paths to keep ACT
+          # from crashing on plugin errors, and the WinForms-style
+          # property-set-in-constructor in SettingsPanel is idiomatic.
+          queries: security-extended
 
       - name: Build
         run: dotnet build EQ2Lexicon.ACTPlugin.sln -c Release
