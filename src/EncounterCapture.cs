@@ -419,7 +419,14 @@ namespace EQ2Lexicon.ACTPlugin
         private static string FormatTime(DateTime t)
         {
             if (t == DateTime.MinValue) return "";
-            return t.ToString("yyyy-MM-dd HH:mm:ss");
+            // ACT's DateTime comes from the EQ2 log line, which is written in
+            // the player's local clock. Convert to UTC and tag with a 'Z'
+            // suffix so the server can store an absolute timestamp — without
+            // this, cross-timezone viewers would see times shifted by the
+            // uploader's local-vs-UTC offset. ToUniversalTime() treats Kind
+            // == Unspecified as Local, which is what we want here.
+            var utc = t.Kind == DateTimeKind.Utc ? t : t.ToUniversalTime();
+            return utc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
         }
 
         // -------------------------------------------------------------------
