@@ -1,15 +1,13 @@
 name: Release
 
-# Triggered when a v* tag is pushed. Generates release notes from the
-# commits since the previous tag and creates a DRAFT GitHub release
-# the maintainer reviews and publishes.
+# Triggered when a v* tag is pushed. Builds the UI DLL against the
+# real strong-named ACT reference (extracted from ACTv3.zip on the
+# runner), generates release notes from commits since the previous
+# tag, then creates a DRAFT GitHub release with the DLL attached.
 #
-# The DLL upload stays manual: the UI assembly EQ2Lexicon.ACTPlugin.dll
-# needs ACT installed to build, which the runner doesn't have. After
-# this workflow finishes, the release recipe is:
+# The release stays a draft so the maintainer can review the
+# auto-generated notes before clicking Publish. To publish:
 #
-#   dotnet build src/EQ2Lexicon.ACTPlugin.csproj -c Release
-#   gh release upload vX.Y.Z src/bin/Release/net48/EQ2Lexicon.ACTPlugin.dll
 #   gh release edit vX.Y.Z --draft=false
 on:
   push:
@@ -19,52 +17,86 @@ permissions:
   contents: write
 
 jobs:
-  draft-release:
-    runs-on: ubuntu-latest
+  release:
+    # windows-latest because the UI assembly targets net48 and
+    # references Advanced Combat Tracker.exe — neither builds on
+    # Linux without Mono.
+    runs-on: windows-latest
+
     steps:
       - uses: actions/checkout@v6
         with:
           # Full history so we can diff against the previous tag.
           fetch-depth: 0
 
-      - name: Generate release notes
-        id: notes
+      # ACT is strong-named, so a hand-rolled stub assembly can't
+      # produce a UI DLL that loads at runtime. Use the real
+      # ACTv3.zip from the upstream GitHub release instead — it
+      # contains the exe with the right name/version/public-key-token
+      # and weighs ~1.3MB.
+      - name: Fetch ACT for build reference
+        shell: pwsh
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          # Find the tag immediately before this one (by creation date).
-          # If this is the first tag, fall back to listing every commit.
-          PREV_TAG=$(git tag --sort=-creatordate | grep -v "^${TAG}$" | head -n1 || true)
-          if [ -n "$PREV_TAG" ]; then
-            RANGE="$PREV_TAG..$TAG"
-            HEADER="## Changes since $PREV_TAG"
-          else
-            RANGE="$TAG"
-            HEADER="## All commits"
-          fi
+          $url = "https://github.com/EQAditu/AdvancedCombatTracker/releases/latest/download/ACTv3.zip"
+          Invoke-WebRequest -Uri $url -OutFile ACTv3.zip -UseBasicParsing
+          Expand-Archive -Path ACTv3.zip -DestinationPath C:\ACT -Force
+          if (-not (Test-Path "C:\ACT\Advanced Combat Tracker.exe")) {
+            throw "ACT exe not found in extracted zip"
+          }
+          "ACT_INSTALL_DIR=C:\ACT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-          {
-            echo "$HEADER"
-            echo ""
-            # %s = subject line; %h = short hash. Skip merge commits.
-            git log --no-merges --pretty=format:"- %s (\`%h\`)" "$RANGE"
-            echo ""
-            echo ""
-            echo "## Install"
-            echo ""
-            echo "Download \`EQ2Lexicon.ACTPlugin.dll\` from the assets below and place it in"
-            echo "\`%APPDATA%\\Advanced Combat Tracker\\Plugins\\\`. In ACT: Options → Plugins →"
-            echo "Browse → select the DLL → Add/Enable Plugin."
-          } > RELEASE_NOTES.md
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
 
-          echo "Generated notes:"
-          cat RELEASE_NOTES.md
+      - name: Build UI assembly (Release)
+        run: dotnet build src/EQ2Lexicon.ACTPlugin.csproj -c Release
 
-      - name: Create draft release
+      - name: Generate release notes
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
+          # Previous tag by creation date, excluding this one. Empty
+          # string if this is the first ever tag.
+          $prev = (git tag --sort=-creatordate | Where-Object { $_ -ne $tag } | Select-Object -First 1)
+          if ($prev) {
+            $range = "$prev..$tag"
+            $header = "## Changes since $prev"
+          } else {
+            $range = $tag
+            $header = "## All commits"
+          }
+          # %s = subject, %h = short hash. Skip merge commits.
+          $log = (git log --no-merges "--pretty=format:- %s (``%h``)" $range) -join "`n"
+
+          # Built as an array join rather than a here-string because
+          # PowerShell here-strings require the closing token at
+          # column 0, which conflicts with YAML's |-block-scalar
+          # indentation rules. Double-backticks `` produce a single
+          # literal backtick in the output (PowerShell escape).
+          $notes = @(
+            $header
+            ""
+            $log
+            ""
+            "## Install"
+            ""
+            "Download ``EQ2Lexicon.ACTPlugin.dll`` from the assets below and place it in"
+            "``%APPDATA%\Advanced Combat Tracker\Plugins\``. In ACT: Options -> Plugins ->"
+            "Browse -> select the DLL -> Add/Enable Plugin."
+          ) -join "`n"
+          $notes | Out-File -FilePath RELEASE_NOTES.md -Encoding utf8
+          Write-Host "Generated notes:"
+          Get-Content RELEASE_NOTES.md
+
+      - name: Create draft release with DLL attached
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body_path: RELEASE_NOTES.md
-          # Draft so the maintainer can attach the DLL then publish.
+          # Draft so the maintainer reviews notes before publishing.
           draft: true
           prerelease: false
+          files: src/bin/Release/net48/EQ2Lexicon.ACTPlugin.dll

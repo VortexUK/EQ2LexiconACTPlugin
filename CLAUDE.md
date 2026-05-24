@@ -37,23 +37,22 @@ The split also unlocks GitHub Actions CI: the workflow at `.github/workflows/ci.
 - Releases are tags `v0.1.x` pushed to GitHub, with the DLL attached as a release asset.
 - DLL output path after `dotnet build -c Release`: `src/bin/Release/net48/EQ2Lexicon.ACTPlugin.dll`.
 
-Release recipe (auto-release workflow does steps 5–6 for you):
+Release recipe — fully automated end-to-end:
 
 ```powershell
 # 1. Bump <Version> in BOTH csproj files (UI + Core stay in lockstep)
-# 2. Build the UI assembly locally — the workflow can't, since the runner
-#    has no ACT
-dotnet build src/EQ2Lexicon.ACTPlugin.csproj -c Release
-# 3. Commit + push
+# 2. Commit + push
 git commit -am "vX.Y.Z: <summary>"
 git push                          # pre-push hook + CI workflow run
-# 4. Tag + push tag — fires the release workflow
+# 3. Tag + push tag — fires the release workflow
 git tag -a vX.Y.Z -m "vX.Y.Z - <summary>"
 git push origin vX.Y.Z
-# 5. (automatic) .github/workflows/release.yml creates a DRAFT GitHub
-#    release with notes generated from the commits since the previous tag
-# 6. Attach the DLL the workflow couldn't build, then publish
-gh release upload vX.Y.Z src/bin/Release/net48/EQ2Lexicon.ACTPlugin.dll
+# 4. (automatic) .github/workflows/release.yml:
+#    - fetches ACTv3.zip from upstream to get the strong-named ACT reference
+#    - builds the UI DLL on windows-latest
+#    - generates release notes from the commits since the previous tag
+#    - creates a DRAFT release with EQ2Lexicon.ACTPlugin.dll attached
+# 5. Review the draft notes on github.com, then publish:
 gh release edit vX.Y.Z --draft=false
 ```
 
@@ -133,11 +132,11 @@ Comprehensive pipeline status as of v0.1.5 + the B2.16 sprint:
 |---|---|
 | Pre-push gate (format, build, test, vuln scan) | ✅ `.githooks/pre-push` |
 | Pinned SDK | ✅ `global.json` |
-| GitHub Actions build/test on PR | ✅ `.github/workflows/ci.yml` (builds Core + tests) |
+| GitHub Actions build/test on PR | ✅ `.github/workflows/ci.yml` (builds Core, UI via extracted ACT, runs tests) |
 | Code coverage report | ✅ Coverlet + ReportGenerator, posted to job summary + artifact |
 | Vulnerability scanning | ✅ `dotnet list package --vulnerable` in pre-push + CI |
 | Dependabot | ✅ `.github/dependabot.yml` |
 | Core/UI assembly split (so CI can build without ACT) | ✅ `src/Core/` |
-| Auto-release on `v*` tag push | ✅ `.github/workflows/release.yml` — drafts release with auto-generated notes; maintainer attaches DLL + publishes |
+| Auto-release on `v*` tag push | ✅ `.github/workflows/release.yml` — builds UI DLL on the runner via extracted ACT, drafts release with notes + DLL attached, maintainer just publishes |
 | Authenticode-signed DLL | ❌ Skipped — ~$200/yr cert not worth it; users click through SmartScreen |
 | Changelog automation | ❌ Skipped — release notes hand-written per release |

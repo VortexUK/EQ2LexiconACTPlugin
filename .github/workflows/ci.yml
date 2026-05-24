@@ -23,6 +23,21 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # ACT is strong-named, so a stub assembly can't produce a UI
+      # DLL that loads at runtime. Fetch the real ACTv3.zip from
+      # upstream (~1.3MB) so the UI assembly build catches breakage
+      # on every PR, not just at release time.
+      - name: Fetch ACT for build reference
+        shell: pwsh
+        run: |
+          $url = "https://github.com/EQAditu/AdvancedCombatTracker/releases/latest/download/ACTv3.zip"
+          Invoke-WebRequest -Uri $url -OutFile ACTv3.zip -UseBasicParsing
+          Expand-Archive -Path ACTv3.zip -DestinationPath C:\ACT -Force
+          if (-not (Test-Path "C:\ACT\Advanced Combat Tracker.exe")) {
+            throw "ACT exe not found in extracted zip"
+          }
+          "ACT_INSTALL_DIR=C:\ACT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       # global.json pins the SDK version; setup-dotnet will read it.
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v5
@@ -37,15 +52,11 @@ jobs:
       - name: Format check
         run: dotnet format --verify-no-changes EQ2Lexicon.ACTPlugin.sln
 
-      # The UI assembly references the local ACT install via HintPath
-      # (Advanced Combat Tracker.exe), which obviously isn't on the
-      # runner. Restrict CI to the Core assembly + tests; that's where
-      # all the testable code lives anyway after the B2.16b split.
-      - name: Build Core
-        run: dotnet build src/Core/EQ2Lexicon.ACTPlugin.Core.csproj -c Release --no-restore
-
-      - name: Build tests
-        run: dotnet build tests/EQ2Lexicon.ACTPlugin.Tests/EQ2Lexicon.ACTPlugin.Tests.csproj -c Release --no-restore
+      # Build everything: Core, UI (now possible thanks to the ACT
+      # fetch above), and tests. Building the whole sln in one go
+      # also exercises the UI -> Core ProjectReference wiring.
+      - name: Build solution
+        run: dotnet build EQ2Lexicon.ACTPlugin.sln -c Release --no-restore
 
       - name: Test with coverage
         run: >
