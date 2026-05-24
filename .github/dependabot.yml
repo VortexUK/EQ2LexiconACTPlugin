@@ -14,6 +14,16 @@ updates:
     commit-message:
       prefix: "deps"
       include: "scope"
+    ignore:
+      # coverlet.collector v8+ raised the runtime minimum to .NET 8,
+      # which means the collector DLL no longer loads into our net48
+      # test host (VSTest can't register the collector → "Unable to
+      # find a datacollector with friendly name 'XPlat Code Coverage'").
+      # Staying on the 6.x line until we either multi-target the tests
+      # project to net8.0 or migrate to coverlet.msbuild. See PR #5
+      # for the failure mode.
+      - dependency-name: "coverlet.collector"
+        update-types: ["version-update:semver-major"]
 
   # GitHub Actions versions (when we add CI workflows).
   - package-ecosystem: "github-actions"
