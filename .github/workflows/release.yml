@@ -1,0 +1,70 @@
+name: Release
+
+# Triggered when a v* tag is pushed. Generates release notes from the
+# commits since the previous tag and creates a DRAFT GitHub release
+# the maintainer reviews and publishes.
+#
+# The DLL upload stays manual: the UI assembly EQ2Lexicon.ACTPlugin.dll
+# needs ACT installed to build, which the runner doesn't have. After
+# this workflow finishes, the release recipe is:
+#
+#   dotnet build src/EQ2Lexicon.ACTPlugin.csproj -c Release
+#   gh release upload vX.Y.Z src/bin/Release/net48/EQ2Lexicon.ACTPlugin.dll
+#   gh release edit vX.Y.Z --draft=false
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  draft-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so we can diff against the previous tag.
+          fetch-depth: 0
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          # Find the tag immediately before this one (by creation date).
+          # If this is the first tag, fall back to listing every commit.
+          PREV_TAG=$(git tag --sort=-creatordate | grep -v "^${TAG}$" | head -n1 || true)
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="$PREV_TAG..$TAG"
+            HEADER="## Changes since $PREV_TAG"
+          else
+            RANGE="$TAG"
+            HEADER="## All commits"
+          fi
+
+          {
+            echo "$HEADER"
+            echo ""
+            # %s = subject line; %h = short hash. Skip merge commits.
+            git log --no-merges --pretty=format:"- %s (\`%h\`)" "$RANGE"
+            echo ""
+            echo ""
+            echo "## Install"
+            echo ""
+            echo "Download \`EQ2Lexicon.ACTPlugin.dll\` from the assets below and place it in"
+            echo "\`%APPDATA%\\Advanced Combat Tracker\\Plugins\\\`. In ACT: Options → Plugins →"
+            echo "Browse → select the DLL → Add/Enable Plugin."
+          } > RELEASE_NOTES.md
+
+          echo "Generated notes:"
+          cat RELEASE_NOTES.md
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          # Draft so the maintainer can attach the DLL then publish.
+          draft: true
+          prerelease: false

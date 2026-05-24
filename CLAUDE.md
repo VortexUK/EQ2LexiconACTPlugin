@@ -37,23 +37,24 @@ The split also unlocks GitHub Actions CI: the workflow at `.github/workflows/ci.
 - Releases are tags `v0.1.x` pushed to GitHub, with the DLL attached as a release asset.
 - DLL output path after `dotnet build -c Release`: `src/bin/Release/net48/EQ2Lexicon.ACTPlugin.dll`.
 
-Release recipe:
+Release recipe (auto-release workflow does steps 5–6 for you):
 
 ```powershell
-# 1. Bump <Version> in src/EQ2Lexicon.ACTPlugin.csproj
-# 2. Build
+# 1. Bump <Version> in BOTH csproj files (UI + Core stay in lockstep)
+# 2. Build the UI assembly locally — the workflow can't, since the runner
+#    has no ACT
 dotnet build src/EQ2Lexicon.ACTPlugin.csproj -c Release
 # 3. Commit + push
 git commit -am "vX.Y.Z: <summary>"
-git push   # pre-push hook runs format + build + test
-# 4. Tag + push tag
+git push                          # pre-push hook + CI workflow run
+# 4. Tag + push tag — fires the release workflow
 git tag -a vX.Y.Z -m "vX.Y.Z - <summary>"
 git push origin vX.Y.Z
-# 5. Cut release
-gh release create vX.Y.Z `
-  "src/bin/Release/net48/EQ2Lexicon.ACTPlugin.dll" `
-  --title "vX.Y.Z - <summary>" `
-  --notes-file _release_notes.md   # write this temp file first, delete after
+# 5. (automatic) .github/workflows/release.yml creates a DRAFT GitHub
+#    release with notes generated from the commits since the previous tag
+# 6. Attach the DLL the workflow couldn't build, then publish
+gh release upload vX.Y.Z src/bin/Release/net48/EQ2Lexicon.ACTPlugin.dll
+gh release edit vX.Y.Z --draft=false
 ```
 
 ## Build / test / lint
@@ -137,6 +138,6 @@ Comprehensive pipeline status as of v0.1.5 + the B2.16 sprint:
 | Vulnerability scanning | ✅ `dotnet list package --vulnerable` in pre-push + CI |
 | Dependabot | ✅ `.github/dependabot.yml` |
 | Core/UI assembly split (so CI can build without ACT) | ✅ `src/Core/` |
-| Auto-release on `v*` tag push | ⏳ Pending — manual `gh release create` recipe documented above |
+| Auto-release on `v*` tag push | ✅ `.github/workflows/release.yml` — drafts release with auto-generated notes; maintainer attaches DLL + publishes |
 | Authenticode-signed DLL | ❌ Skipped — ~$200/yr cert not worth it; users click through SmartScreen |
 | Changelog automation | ❌ Skipped — release notes hand-written per release |
