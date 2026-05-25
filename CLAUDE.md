@@ -144,6 +144,21 @@ Failure modes (offline, GitHub 5xx, rate-limit, malformed JSON) all collapse to 
 
 No caching of the GitHub response — request volume is at most a handful per user per day, well under the unauthenticated 60/h/IP limit, and re-fetching on every ACT start means a user who just installed an update sees the banner clear instantly after restarting ACT.
 
+## Language assumptions (English-only EQ2)
+
+The plugin assumes English ACT EQ2-parser output throughout. ACT does have German + French EQ2 parser plugins on record, but as of 2026 there are **no active non-English EQ2 servers** — the EU/JP servers (Storms = French, Valor = German, Sebilis = Japanese) were consolidated into the English-only Thurgadin server in 2016, and the current TLE servers (Varsoon, Kaladim) are English-only. So this assumption is safe today; documenting it so future-you doesn't have to re-research it.
+
+Four spots in the code depend on specific English strings ACT emits:
+
+| Where | English string assumed |
+|---|---|
+| `src/Core/PayloadBuilder.cs` `OutgoingGroupToSwingType` | `combatant.Items` dict keys: `"Auto-Attack (Out)"`, `"Skill/Ability (Out)"`, `"Healed (Out)"`, `"Cure/Dispel (Out)"`, `"Threat (Out)"` |
+| `src/Core/EncounterTitle.cs` `IsPlaceholder` | Placeholder encounter titles `"Encounter"` and `"Unknown"` |
+| `src/EncounterCapture.cs` `Poll` | Zone-aggregate pseudo-encounter title `"All"` |
+| `src/Core/EncounterZone.cs` `IsImportOrMerge` | Synthetic-zone name `"Import/Merge"` |
+
+**If a non-English EQ2 community ever materialises** (a private server, a Daybreak re-launch, …): the swing-type dict fails *gracefully* — unknown keys just return 0 — so a foreign-language client would still upload but with swings unclassified. The other three are predicates that return safe defaults (don't-skip / not-placeholder / not-import-merge) when their string doesn't match, so the worst outcome is a German user's "Begegnung"-titled fight uploading under that name instead of being deferred. Audit pass at that point: localise each table, ideally pull the canonical strings out of the non-English parser DLL rather than guessing.
+
 ## ACT UI extension (v0.1.9+)
 
 ACT has **no documented extension point for its context menu** — plugins reach into the WinForms control tree by name and mutate the existing `ContextMenuStrip`. Reference implementation: [ActStatter](https://github.com/eq2reapp/ActStatter/blob/main/StatterMain.cs). The wiring lives in `src/ActMenuExtension.cs`; the gotchas worth knowing if you ever extend it:
