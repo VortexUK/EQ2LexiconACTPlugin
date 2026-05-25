@@ -25,7 +25,9 @@ The split also unlocks GitHub Actions CI: the workflow at `.github/workflows/ci.
 |---|---|
 | `src/Plugin.cs` | `IActPluginV1` entry point. ACT calls `InitPlugin`/`DeInitPlugin`. Resolves the config path via `ActHelpers.GetConfigPath()` and passes it to `PluginConfig.Load`/`Save`. Owns lifecycles of `PluginConfig`, `SettingsPanel`, `EncounterCapture`, `UploadClient`. |
 | `src/SettingsPanel.cs` | WinForms settings UI hosted in ACT's plugin tab. Dark-theme card layout (`T` static class holds every colour). Three cards: Configuration / Logging As / Last Captured. Persistence happens via the `_onSave` callback so the panel stays path-free. |
-| `src/EncounterCapture.cs` | 2 s polling timer over `ActGlobals.oFormActMain.ActiveZone`. Detects "settled" encounters (no `EndTime` update for `SettleSeconds=15`), converts to `EncounterSnapshot`, then calls `PayloadBuilder.BuildPayload` → `SanitizePayload` → `SerializeJson`. |
+| `src/EncounterCapture.cs` | 2 s polling timer over `ActGlobals.oFormActMain.ActiveZone`. Detects "settled" encounters (no `EndTime` update for `SettleSeconds=15`), converts to `EncounterSnapshot` via the public static `CaptureSnapshot` (reused by the manual-upload path), then calls `PayloadBuilder.BuildPayload` → `SanitizePayload` → `SerializeJson`. Defers placeholder-titled encounters via `EncounterTitle.IsPlaceholder` for up to `MaxPlaceholderWaitSeconds=60` (then raises `OnSkipped` with a user-visible reason). |
+| `src/ActMenuExtension.cs` | Adds "Upload to EQ2 Lexicon" to ACT's right-click encounter menu. See "ACT UI extension" below for the (undocumented) wiring details. |
+| `src/Core/EncounterTitle.cs` | `IsPlaceholder(title)` — the shared predicate used by both the polling and manual-upload paths to reject encounters ACT hasn't named yet ("Encounter", "Unknown", empty/whitespace). Lives in Core so it's testable without ACT. |
 | `src/ActHelpers.cs` | Reads the logging character name by parsing the active log file path (`eq2log_<name>.txt`). `ActGlobals.charName` returns `"YOU"` in EQ2 so it can't be used. Also owns `GetConfigPath()` — the `%APPDATA%\Advanced Combat Tracker\Config\` resolver kept here so `PluginConfig` stays ACT-free. |
 | `src/Core/PayloadBuilder.cs` | Pure transform: `EncounterSnapshot` → ingest-JSON dict shape. Owns `OutgoingGroupToSwingType`, `FormatTime` (emits ISO-8601 + Z), `SanitizePayload` (replaces NaN/∞ with 0), and `SerializeJson` (JavaScriptSerializer with an 8 MB ceiling). |
 | `src/Core/Snapshots.cs` | Plain DTOs (`EncounterSnapshot`, `CombatantSnapshot`, `DamageTypeAggregate`, `AttackTypeSnapshot`) that mirror the slice of ACT's data model the payload builder reads. |
@@ -139,6 +141,30 @@ Failure modes (offline, GitHub 5xx, rate-limit, malformed JSON) all collapse to 
 `Compute()` returns `DevBuild` when the local version is strictly greater than the latest published tag (i.e. you bumped `<Version>` but haven't tagged yet) — UI shows a muted "dev build" label so maintainers don't get nagged about their own un-released version.
 
 No caching of the GitHub response — request volume is at most a handful per user per day, well under the unauthenticated 60/h/IP limit, and re-fetching on every ACT start means a user who just installed an update sees the banner clear instantly after restarting ACT.
+
+## ACT UI extension (v0.1.9+)
+
+ACT has **no documented extension point for its context menu** — plugins reach into the WinForms control tree by name and mutate the existing `ContextMenuStrip`. Reference implementation: [ActStatter](https://github.com/eq2reapp/ActStatter/blob/main/StatterMain.cs). The wiring lives in `src/ActMenuExtension.cs`; the gotchas worth knowing if you ever extend it:
+
+- **Encounter view is a TreeView named `tvDG`** — not `lvEncounters` or anything ListView-shaped. `ActGlobals.oFormActMain.MainTreeView` exists as a public property but is documented "do not enumerate" (nodes populate lazily on expand) — use the `tvDG` lookup instead.
+- **Controls don't exist at `InitPlugin` time** — ActMenuExtension uses a one-shot WinForms Timer with a 5s delay. If `tvDG` still isn't found at 5s the menu silently doesn't appear (rare; user can disable+reenable the plugin to retry).
+- **Encounter nodes are tagged with the literal string `"EncounterData"`** — `GetSelectedEncounter()` walks up parents until it finds one. Zone nodes have a different Tag, and the "All" pseudo-encounter isn't a tagged tree node, so this filter is sufficient.
+- **Resolve via `ActGlobals.oFormActMain.ZoneList[parent.Index].Items[node.Index]`** — returns the live `EncounterData`.
+- **`DeInitPlugin` MUST unsubscribe handlers and `Items.Remove` the menu item** — ACT's auto-updater swaps plugin DLLs by disabling+reenabling, and leftover dead delegates accumulate (the menu item appears twice after a reload otherwise).
+- **Threading**: WinForms Timer Tick + `ContextMenuStrip.Opening` + Click all fire on the UI thread. No marshalling needed inside ActMenuExtension; the upload work is kicked to a worker by the callback handler in `Plugin.cs`.
+
+### Manual upload gate matrix (`Plugin.OnManualUploadRequested`)
+
+Different from the polling path — bypasses user opt-in gates because the click IS the opt-in:
+
+| Gate | Manual upload | Auto upload |
+|---|---|---|
+| Blacklist (don't-upload-as) | **bypassed** | enforced |
+| "Enable automatic upload" checkbox | **bypassed** | enforced |
+| Placeholder title (`EncounterTitle.IsPlaceholder`) | enforced (rejects with "rename in ACT first") | deferred up to 60s, then skipped |
+| API token configured | enforced | enforced |
+| Version not too old | enforced | enforced |
+| HMAC signing | applied | applied |
 
 ## ACT API gotchas worth remembering
 

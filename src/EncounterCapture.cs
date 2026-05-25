@@ -39,6 +39,16 @@ namespace EQ2Lexicon.ACTPlugin
         // before we upload — otherwise we'd upload mid-fight snapshots.
         private const double SettleSeconds = 15.0;
 
+        // After settle, give the title up to this long to resolve past the
+        // placeholder "Encounter" / "" before giving up. Observed on
+        // evac-cut-short fights: ACT marks the encounter complete before
+        // its EQ2 log scanner has identified the mob, so we briefly see a
+        // settled-but-untitled fight. ACT does eventually fill it in; just
+        // not always within the 15s settle window. Past this cap, mark
+        // processed (don't loop forever) and surface a skip reason to the
+        // UI so the user knows we didn't quietly drop a real fight.
+        private const double MaxPlaceholderWaitSeconds = 60.0;
+
         // Last captured artefact — read by the settings panel for display.
         public string LastCapturedEncId { get; private set; } = "";
         public string LastCapturedTitle { get; private set; } = "";
@@ -49,6 +59,14 @@ namespace EQ2Lexicon.ACTPlugin
 
         /// <summary>Raised after a successful capture. Off-UI-thread.</summary>
         public event Action? OnCaptured;
+
+        /// <summary>
+        /// Raised when we intentionally skip an encounter we COULD have
+        /// captured (placeholder title that never resolved, etc.). The
+        /// Plugin routes the reason to the SettingsPanel so the user
+        /// knows a real fight was dropped and why.
+        /// </summary>
+        public event Action<string>? OnSkipped;
 
         public EncounterCapture()
         {
@@ -100,9 +118,39 @@ namespace EQ2Lexicon.ACTPlugin
                 // Not settled yet — ACT may still be appending actions.
                 if ((now - enc.EndTime).TotalSeconds < SettleSeconds) continue;
 
+                // Placeholder title: defer in the hope ACT fills it in on
+                // a later poll. Past MaxPlaceholderWaitSeconds, give up
+                // and surface a skip reason so the user doesn't think the
+                // upload silently disappeared.
+                if (EncounterTitle.IsPlaceholder(enc.Title))
+                {
+                    if ((now - enc.EndTime).TotalSeconds < MaxPlaceholderWaitSeconds)
+                    {
+                        // Don't add to _processed — retry next tick.
+                        continue;
+                    }
+                    lock (_lock)
+                    {
+                        _processed.Add(encid);
+                        _processedQueue.Enqueue(encid);
+                        while (_processedQueue.Count > ProcessedCap)
+                        {
+                            _processed.Remove(_processedQueue.Dequeue());
+                        }
+                    }
+                    OnSkipped?.Invoke(
+                        $"skipped ({encid}: title never resolved past '{enc.Title}')");
+                    continue;
+                }
+
                 ProcessEncounter(enc, encid);
             }
         }
+
+        // The placeholder-title predicate lives in Core
+        // (EncounterTitle.IsPlaceholder) so the test project can
+        // exercise it without ACT installed. Both the polling path
+        // above and Plugin.OnManualUploadRequested call into it.
 
         private void ProcessEncounter(EncounterData enc, string encid)
         {
@@ -137,9 +185,15 @@ namespace EQ2Lexicon.ACTPlugin
         // -------------------------------------------------------------------
         // ACT → snapshot conversion. Mechanical; the only "logic" here is
         // pulling fields and using ACT's GetAllies() for the ally split.
+        //
+        // Public + static so the manual-upload path (right-click "Upload
+        // to EQ2 Lexicon" → ActMenuExtension) reuses the exact same
+        // conversion as the polling path. If these two ever diverge,
+        // the manual upload produces a subtly different payload from
+        // the automatic one, which would be a debugging nightmare.
         // -------------------------------------------------------------------
 
-        private static EncounterSnapshot CaptureSnapshot(EncounterData enc)
+        public static EncounterSnapshot CaptureSnapshot(EncounterData enc)
         {
             var snap = new EncounterSnapshot
             {

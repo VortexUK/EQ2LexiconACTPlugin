@@ -20,6 +20,7 @@ namespace EQ2Lexicon.ACTPlugin
         private SettingsPanel? _settingsPanel;
         private EncounterCapture? _capture;
         private UploadClient? _uploadClient;
+        private ActMenuExtension? _menuExtension;
 
         public void InitPlugin(TabPage pluginScreenSpace, Label pluginStatusText)
         {
@@ -54,6 +55,12 @@ namespace EQ2Lexicon.ACTPlugin
             _capture = new EncounterCapture();
             _settingsPanel.GetLastCapturedPayloadJson = () => _capture?.LastCapturedPayloadJson ?? "";
             _capture.OnCaptured += OnEncounterCaptured;
+            _capture.OnSkipped += reason =>
+                _settingsPanel?.SetUploadStatus(reason, success: false);
+
+            // Right-click "Upload to EQ2 Lexicon" on ACT's encounter
+            // tree. Attaches 5s later — controls aren't built yet.
+            _menuExtension = new ActMenuExtension(OnManualUploadRequested);
 
             UpdateStatusFromConfig();
 
@@ -94,6 +101,8 @@ namespace EQ2Lexicon.ACTPlugin
 
         public void DeInitPlugin()
         {
+            _menuExtension?.Dispose();
+            _menuExtension = null;
             _capture?.Dispose();
             _capture = null;
             _uploadClient?.Dispose();
@@ -114,6 +123,88 @@ namespace EQ2Lexicon.ACTPlugin
             config.Save(_configPath);
             _config = config;
             UpdateStatusFromConfig();
+        }
+
+        /// <summary>
+        /// User right-clicked an encounter in ACT's tree and chose
+        /// "Upload to EQ2 Lexicon". Runs on the UI thread; we kick the
+        /// HTTP work to a worker.
+        ///
+        /// Manual-upload gate matrix (different from the auto path):
+        ///   * blacklist                 → BYPASSED (deliberate action)
+        ///   * upload-enabled toggle      → BYPASSED (deliberate action)
+        ///   * placeholder title check    → ENFORCED (no point uploading
+        ///                                  an "Encounter"-titled fight;
+        ///                                  user is told to rename in ACT)
+        ///   * token configured           → ENFORCED (can't sign without)
+        ///   * version not too old        → ENFORCED in UploadClient
+        ///                                  (server-compat, same path)
+        ///   * HMAC signing               → ENFORCED in UploadClient
+        /// </summary>
+        private void OnManualUploadRequested(EncounterData enc)
+        {
+            if (_settingsPanel == null || _config == null || _uploadClient == null) return;
+
+            // Placeholder check uses the SAME predicate as the
+            // automatic path so the rule stays consistent. The
+            // message tells the user how to fix it themselves.
+            if (EncounterTitle.IsPlaceholder(enc.Title))
+            {
+                _settingsPanel.SetUploadStatus(
+                    $"manual upload skipped (title is '{enc.Title}' — rename it in ACT first)",
+                    success: false);
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(_config.ApiToken))
+            {
+                _settingsPanel.SetUploadStatus(
+                    "manual upload skipped (API token not configured)",
+                    success: false);
+                return;
+            }
+
+            // Reuse the same ACT→snapshot conversion the polling path
+            // uses. CaptureSnapshot is public static specifically so
+            // these two paths stay byte-identical in their payload
+            // construction.
+            string json;
+            string title;
+            try
+            {
+                var snapshot = EncounterCapture.CaptureSnapshot(enc);
+                title = snapshot.Title;
+                var payload = PayloadBuilder.BuildPayload(ActHelpers.GetLoggingCharacterName(), snapshot);
+                PayloadBuilder.SanitizePayload(payload);
+                json = PayloadBuilder.SerializeJson(payload);
+            }
+            catch (Exception ex)
+            {
+                _settingsPanel.SetUploadStatus(
+                    "manual upload failed (snapshot error): " + ex.Message,
+                    success: false);
+                return;
+            }
+
+            var url = _config.ServerUrl;
+            var token = _config.ApiToken;
+            _settingsPanel.SetUploadStatus($"manual upload starting ({title})…", success: true);
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var result = await _uploadClient.UploadEncounterAsync(url, token, json);
+                    _settingsPanel?.SetUploadStatus(
+                        "manual: " + result.Message,
+                        result.Success);
+                }
+                catch (Exception ex)
+                {
+                    _settingsPanel?.SetUploadStatus(
+                        "manual upload error: " + ex.Message,
+                        success: false);
+                }
+            });
         }
 
         private void OnEncounterCaptured()
