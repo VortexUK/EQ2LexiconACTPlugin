@@ -284,9 +284,18 @@ namespace EQ2Lexicon.ACTPlugin
         /// </summary>
         public static UpdateCheckResult Compute(Version currentVersion, IList<Version> releasedVersions)
         {
+            // Normalise the caller's current version to 3-part so
+            // Version.Equals matches against the 3-part tag-parsed
+            // released-version list. See GetCurrentAssemblyVersion
+            // for the full reasoning — defensive double-application
+            // here so this function is correct in isolation too.
+            var normalizedCurrent = currentVersion == null
+                ? new Version(0, 0, 0)
+                : NormalizeToThreePart(currentVersion);
+
             var result = new UpdateCheckResult
             {
-                CurrentVersion = currentVersion?.ToString(3) ?? "",
+                CurrentVersion = normalizedCurrent.ToString(3),
             };
 
             if (releasedVersions == null || releasedVersions.Count == 0)
@@ -297,9 +306,11 @@ namespace EQ2Lexicon.ACTPlugin
 
             // Sort descending so [0] is the newest, regardless of what
             // the caller passed in. GitHub already returns newest-first
-            // but we don't rely on that here.
+            // but we don't rely on that here. Normalise each entry too
+            // in case a caller mixes shapes.
             var sorted = releasedVersions
                 .Where(v => v != null)
+                .Select(NormalizeToThreePart)
                 .Distinct()
                 .OrderByDescending(v => v)
                 .ToList();
@@ -321,7 +332,7 @@ namespace EQ2Lexicon.ACTPlugin
                 return result;
             }
 
-            int cmp = currentVersion.CompareTo(latest);
+            int cmp = normalizedCurrent.CompareTo(latest);
             if (cmp > 0)
             {
                 result.Status = UpdateStatus.DevBuild;
@@ -337,8 +348,10 @@ namespace EQ2Lexicon.ACTPlugin
             // Tolerant: SlightlyStale means within the top (Threshold+1)
             // released versions — so threshold=2 covers latest + the two
             // before it, which together are "current or within 2 back".
+            // IndexOf uses Version.Equals which compares ALL components,
+            // hence the normalisation on both sides above.
             int allowedRecent = StaleThresholdVersions + 1;
-            int idxInRecent = sorted.Take(allowedRecent).ToList().IndexOf(currentVersion);
+            int idxInRecent = sorted.Take(allowedRecent).ToList().IndexOf(normalizedCurrent);
             result.Status = idxInRecent >= 0 ? UpdateStatus.SlightlyStale : UpdateStatus.TooOld;
             return result;
         }
@@ -386,11 +399,36 @@ namespace EQ2Lexicon.ACTPlugin
         /// Pulls the assembly's runtime version. Centralised so the
         /// SettingsPanel pill and the User-Agent and the UploadClient
         /// gate all agree on what "current" means.
+        ///
+        /// Normalised to a 3-part Version (Major.Minor.Build) on the
+        /// way out. The raw Assembly.GetName().Version is always
+        /// 4-part with Revision=0, but TryParseTag emits 3-part
+        /// (Revision=-1, the "unset" sentinel) from "v0.1.10"-style
+        /// tags. Version.Equals compares all four components, so
+        /// without normalisation the staleness IndexOf check inside
+        /// Compute would never match a 4-part current version
+        /// against a 3-part released-version list — and a user one
+        /// release behind would see TooOld instead of SlightlyStale.
         /// </summary>
         public static Version GetCurrentAssemblyVersion()
         {
             var asm = typeof(UpdateChecker).Assembly;
-            return asm.GetName().Version ?? new Version(0, 0, 0);
+            var raw = asm.GetName().Version ?? new Version(0, 0, 0);
+            return NormalizeToThreePart(raw);
+        }
+
+        /// <summary>
+        /// Strip the Revision component so a Version compares cleanly
+        /// against tag-parsed Versions. <c>Version.Build</c> can be -1
+        /// (unset) on a 2-part input; we clamp to 0.
+        /// </summary>
+        internal static Version NormalizeToThreePart(Version v)
+        {
+            if (v == null) return new Version(0, 0, 0);
+            return new Version(
+                v.Major < 0 ? 0 : v.Major,
+                v.Minor < 0 ? 0 : v.Minor,
+                v.Build < 0 ? 0 : v.Build);
         }
     }
 }

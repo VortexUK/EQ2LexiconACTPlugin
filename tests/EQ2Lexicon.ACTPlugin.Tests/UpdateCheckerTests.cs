@@ -132,6 +132,55 @@ namespace EQ2Lexicon.ACTPlugin.Tests
         }
 
         [Fact]
+        public void Compute_FourPartCurrentVersionStillMatchesThreePartReleased()
+        {
+            // Regression test for the v0.1.10-shows-as-TooOld bug.
+            //
+            // Real-world setup: Assembly.GetName().Version is always
+            // 4-part with Revision=0 (e.g. Version(0,1,10,0)).
+            // TryParseTag("v0.1.10") emits 3-part with Revision=-1.
+            // Version.Equals compares ALL FOUR components, so the
+            // IndexOf inside Compute would never match → fell
+            // through to TooOld even though the user was one release
+            // behind. Bug was real, screenshot at the commit message.
+            var result = UpdateChecker.Compute(
+                new Version(0, 1, 10, 0),  // 4-part — exactly what Assembly.GetName().Version returns
+                new[]
+                {
+                    new Version(0, 1, 11),  // 3-part — exactly what TryParseTag returns
+                    new Version(0, 1, 10),
+                    new Version(0, 1, 9),
+                });
+            Assert.Equal(UpdateStatus.SlightlyStale, result.Status);
+            Assert.False(result.UploadBlocked);
+        }
+
+        [Fact]
+        public void Compute_FourPartCurrentEqualsThreePartLatest_IsCurrentNotDevBuild()
+        {
+            // Same shape bug from a different angle: when current is
+            // 4-part Version(0,1,11,0) and latest is 3-part Version(0,1,11),
+            // CompareTo says 0.1.11.0 > 0.1.11 (revision 0 > revision -1)
+            // which would (without normalisation) misclassify a fully
+            // up-to-date install as DevBuild.
+            var result = UpdateChecker.Compute(
+                new Version(0, 1, 11, 0),
+                new[] { new Version(0, 1, 11), new Version(0, 1, 10) });
+            Assert.Equal(UpdateStatus.Current, result.Status);
+        }
+
+        [Fact]
+        public void NormalizeToThreePart_StripsRevisionAndClampsBuild()
+        {
+            Assert.Equal(new Version(1, 2, 3), UpdateChecker.NormalizeToThreePart(new Version(1, 2, 3, 0)));
+            Assert.Equal(new Version(1, 2, 3), UpdateChecker.NormalizeToThreePart(new Version(1, 2, 3, 999)));
+            // 2-part input → Build is -1, must clamp to 0.
+            Assert.Equal(new Version(1, 2, 0), UpdateChecker.NormalizeToThreePart(new Version(1, 2)));
+            // Null defensiveness.
+            Assert.Equal(new Version(0, 0, 0), UpdateChecker.NormalizeToThreePart(null!));
+        }
+
+        [Fact]
         public void Compute_HandlesUnsortedInput()
         {
             // Defensive — don't trust the caller to have pre-sorted.
