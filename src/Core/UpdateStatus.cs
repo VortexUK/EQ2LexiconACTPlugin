@@ -67,6 +67,27 @@ namespace EQ2Lexicon.ACTPlugin
         public string LatestReleaseUrl { get; set; } = "";
 
         /// <summary>
+        /// Direct browser_download_url for the EQ2Lexicon.ACTPlugin.dll
+        /// asset of the latest release. Populated when we successfully
+        /// parsed an asset matching the DLL filename from the GitHub
+        /// release feed. Empty when no asset was found — the in-place
+        /// "Install update" button stays disabled and the user falls
+        /// back to the browser download.
+        /// </summary>
+        public string LatestDllUrl { get; set; } = "";
+
+        /// <summary>
+        /// Lowercase-hex SHA-256 digest of the latest DLL asset,
+        /// pulled from the release feed's `digest` field. Used by
+        /// PluginUpdater to verify the bytes match before staging.
+        /// Empty when GitHub hasn't computed one yet (very recent
+        /// releases) or the feed shape changes — in that case the
+        /// installer must refuse to auto-stage rather than ship an
+        /// unverified binary.
+        /// </summary>
+        public string LatestDllSha256 { get; set; } = "";
+
+        /// <summary>
         /// True when <see cref="Status"/> is <see cref="UpdateStatus.TooOld"/>.
         /// Centralised so UploadClient and SettingsPanel agree on what
         /// "blocked" means without duplicating the predicate.

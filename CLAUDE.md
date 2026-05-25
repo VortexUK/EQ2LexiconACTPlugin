@@ -35,7 +35,9 @@ The split also unlocks GitHub Actions CI: the workflow at `.github/workflows/ci.
 | `src/Core/Snapshots.cs` | Plain DTOs (`EncounterSnapshot`, `CombatantSnapshot`, `DamageTypeAggregate`, `AttackTypeSnapshot`) that mirror the slice of ACT's data model the payload builder reads. |
 | `src/Core/PluginConfig.cs` | User settings persisted as XML. `Load(path)` and `Save(path)` take the path from the caller (resolved in `Plugin.cs` via `ActHelpers.GetConfigPath()`). API token is DPAPI-encrypted on disk (current-user scope) with a `DPAPI:` prefix; legacy plaintext from v0.1.0–v0.1.4 still loads. |
 | `src/Core/UploadClient.cs` | `HttpClient` wrapper. `TestConnectionAsync` (GET `/api/auth/whoami`), `UploadEncounterAsync` (POST `/api/parses/ingest`). `ValidateServerUrl` rejects non-https except `localhost`/`127.0.0.1`/`[::1]`. Adds `X-Lexicon-Signature` HMAC header to every upload (see PayloadSigner) and blocks uploads when `UpdateStatus.UploadBlocked == true`. |
-| `src/Core/UpdateChecker.cs` | GitHub-releases-feed fetcher + pure version-comparison logic. `Compute(currentVersion, releasedVersions)` returns an `UpdateCheckResult` with `Current`/`SlightlyStale`/`TooOld`/`DevBuild`/`Unknown`. Threshold = `StaleThresholdVersions` (2) — older than that blocks uploads. Failure modes (network down, GH 5xx, rate-limit) all collapse to `Unknown` so the gate fails OPEN. |
+| `src/Core/UpdateChecker.cs` | GitHub-releases-feed fetcher + pure version-comparison logic. `Compute(currentVersion, releasedVersions)` returns an `UpdateCheckResult` with `Current`/`SlightlyStale`/`TooOld`/`DevBuild`/`Unknown`. Threshold = `StaleThresholdVersions` (2) — older than that blocks uploads. Failure modes (network down, GH 5xx, rate-limit) all collapse to `Unknown` so the gate fails OPEN. `ParseLatestDllAsset` extracts the latest-release DLL URL + SHA-256 digest for the self-update flow. |
+| `src/Core/PluginUpdater.cs` | Download + SHA-256 verify for the self-update flow (v0.1.12+). Pure (`IDllAssetFetcher` injects HTTP). Constant-time hash compare. Refuses to install without a digest, on size overflow (10 MB cap vs ~76 KB DLL), and on any hash mismatch. |
+| `src/UpdateInstaller.cs` | UI-side staging for the self-update flow. Writes `<dll>.new` next to the running DLL, drops a manual-recovery readme, spawns a hidden PowerShell `Wait-Process -Id <act_pid>; Move-Item -Force *.new *.dll` that swaps the file once ACT exits. Recovery readme covers the case where the helper script gets killed by AV. |
 | `src/Core/PayloadSigner.cs` | HMAC-SHA256 of the upload body keyed by the user's API token. See "Payload integrity" below for the threat model and what this does/doesn't defend. |
 | `tests/EQ2Lexicon.ACTPlugin.Tests/` | xUnit project, `net48`. 72 tests. References Core only (UI types aren't testable without ACT). Covers PayloadBuilder, PluginConfig (incl. DPAPI roundtrip), UploadClient (incl. URL validator). Coverage collected via `coverlet.collector`. |
 
@@ -143,6 +145,21 @@ Failure modes (offline, GitHub 5xx, rate-limit, malformed JSON) all collapse to 
 `Compute()` returns `DevBuild` when the local version is strictly greater than the latest published tag (i.e. you bumped `<Version>` but haven't tagged yet) — UI shows a muted "dev build" label so maintainers don't get nagged about their own un-released version.
 
 No caching of the GitHub response — request volume is at most a handful per user per day, well under the unauthenticated 60/h/IP limit, and re-fetching on every ACT start means a user who just installed an update sees the banner clear instantly after restarting ACT.
+
+## Self-update (v0.1.12+)
+
+The version banner gets a primary "Install update" button (alongside the existing "Download in browser" secondary fallback) when both an asset URL and a SHA-256 digest were resolved from the GitHub release feed. Click flow:
+
+1. **Download** the DLL bytes from `LatestDllUrl` via HttpClient. Capped at 10 MB; refused on any non-2xx response. Bytes held in memory only.
+2. **Verify** SHA-256 against `LatestDllSha256` (pulled from the release feed's `digest` field) via constant-time compare. Mismatch → refuse, surface error, don't touch disk. **No digest** → also refuse — shipping unverified code into a running .NET process is unacceptable, the user gets nudged to the browser fallback.
+3. **Stage** by writing the bytes to `EQ2Lexicon.ACTPlugin.dll.new` next to the loaded DLL. (Windows allows creating this file; it does NOT allow overwriting the loaded `.dll` itself — that's why we don't just overwrite.)
+4. **Drop a recovery readme** (`EQ2Lexicon.ACTPlugin.UPDATE_READ_ME.txt`) in the same folder with manual swap instructions, in case the helper script fails.
+5. **Spawn a hidden PowerShell helper**: `Wait-Process -Id <act_pid>; Move-Item -Force *.new *.dll`. Sleeps in the background until ACT exits, then atomic-renames. User sees nothing.
+6. **UI message**: "Update staged. Close and reopen ACT to apply — the swap happens automatically." Buttons disable.
+
+User effort: one click + restart ACT whenever convenient. The Railway URL fallback covers users who don't restart for days — the v0.1.12 staging sits there, the v0.1.11 keeps uploading via parses.eq2lexicon.com (same Railway service), no breakage.
+
+**What it doesn't try to do**: relaunch ACT itself. Spawning a "wait then re-launch host" helper from a plugin is the kind of behaviour that gets flagged by AV. The user restart is small friction; the auto-relaunch isn't worth the suspicion budget.
 
 ## Language assumptions (English-only EQ2)
 

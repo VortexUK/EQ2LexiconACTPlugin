@@ -47,6 +47,7 @@ namespace EQ2Lexicon.ACTPlugin
 
             _uploadClient = new UploadClient();
             _settingsPanel = new SettingsPanel(_config, OnConfigSaved, _uploadClient);
+            _settingsPanel.OnInstallUpdateClicked = BeginAutoUpdateAsync;
             _pluginTab.Controls.Add(_settingsPanel);
 
             // Encounter capture: polls every 2s for newly-closed encounters
@@ -68,6 +69,82 @@ namespace EQ2Lexicon.ACTPlugin
             // (offline, GitHub 5xx, rate-limit) leaves UpdateStatus null,
             // which UploadClient interprets as "don't gate".
             _ = Task.Run(CheckForUpdatesAsync);
+        }
+
+        /// <summary>
+        /// User clicked "Install update" in the version banner. Runs
+        /// the full download → verify → stage pipeline:
+        ///
+        ///   1. Pull the latest release URL + SHA-256 we cached during
+        ///      the startup update check (UploadClient.UpdateStatus).
+        ///      Refuse if either is missing — installer enforces this
+        ///      too but we want a clear UI message early.
+        ///   2. Core PluginUpdater.DownloadAndVerifyAsync downloads the
+        ///      DLL bytes and verifies the SHA-256 matches.
+        ///   3. UpdateInstaller.StageUpdate writes the .new file +
+        ///      spawns the on-exit swap helper.
+        ///   4. SettingsPanel surfaces the result. On success the
+        ///      buttons disable themselves — single staged update per
+        ///      session is enough.
+        ///
+        /// All exceptions caught and surfaced via SetUpdateInstallStatus
+        /// — clicking Install must never crash ACT or leave the UI in
+        /// a half-disabled state.
+        /// </summary>
+        private async Task BeginAutoUpdateAsync()
+        {
+            if (_settingsPanel == null || _uploadClient == null) return;
+            var status = _uploadClient.UpdateStatus;
+            if (status == null ||
+                string.IsNullOrWhiteSpace(status.LatestDllUrl) ||
+                string.IsNullOrWhiteSpace(status.LatestDllSha256))
+            {
+                _settingsPanel.SetUpdateInstallStatus(
+                    "No verifiable download available — try the browser link instead.",
+                    success: false);
+                return;
+            }
+
+            _settingsPanel.SetUpdateInstallStatus("Downloading update…", success: false);
+
+            DownloadResult download;
+            try
+            {
+                var ver = UpdateChecker.GetCurrentAssemblyVersion().ToString(3);
+                using (var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) })
+                {
+                    var fetcher = new HttpDllAssetFetcher(http, $"EQ2LexiconACTPlugin/{ver}");
+                    download = await PluginUpdater
+                        .DownloadAndVerifyAsync(status.LatestDllUrl, status.LatestDllSha256, fetcher)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                _settingsPanel.SetUpdateInstallStatus("Download failed: " + ex.Message, success: false);
+                return;
+            }
+
+            if (!download.Success || download.DllBytes == null)
+            {
+                _settingsPanel.SetUpdateInstallStatus(download.Message, success: false);
+                return;
+            }
+
+            _settingsPanel.SetUpdateInstallStatus("Verified. Staging…", success: false);
+
+            try
+            {
+                var stage = UpdateInstaller.StageUpdate(
+                    download.DllBytes,
+                    UpdateInstaller.ResolveRunningDllPath());
+                _settingsPanel.SetUpdateInstallStatus(stage.Message, stage.Success);
+            }
+            catch (Exception ex)
+            {
+                _settingsPanel.SetUpdateInstallStatus(
+                    "Couldn't stage update: " + ex.Message, success: false);
+            }
         }
 
         /// <summary>

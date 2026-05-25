@@ -213,6 +213,108 @@ namespace EQ2Lexicon.ACTPlugin.Tests
             Assert.Empty(versions);
         }
 
+        // ── ParseLatestDllAsset (self-update flow) ────────────────────────
+
+        [Fact]
+        public void ParseLatestDllAsset_PullsUrlAndDigestFromFirstNonDraft()
+        {
+            // Real GH release-API shape (trimmed). Two releases — second
+            // is a draft and should be skipped. We expect the v0.1.11
+            // asset URL + the sha256 hex without the algo prefix.
+            var json = @"[
+                {
+                    ""tag_name"": ""v0.1.12"",
+                    ""draft"": false,
+                    ""assets"": [
+                        {
+                            ""name"": ""EQ2Lexicon.ACTPlugin.dll"",
+                            ""browser_download_url"": ""https://github.com/VortexUK/EQ2LexiconACTPlugin/releases/download/v0.1.12/EQ2Lexicon.ACTPlugin.dll"",
+                            ""digest"": ""sha256:f44ef3243eb0b6392132894d3b535da6aa0a17a933a60ba72c9bbcb925cdb270""
+                        }
+                    ]
+                },
+                {
+                    ""tag_name"": ""v0.1.13"",
+                    ""draft"": true,
+                    ""assets"": [
+                        {""name"": ""EQ2Lexicon.ACTPlugin.dll""}
+                    ]
+                }
+            ]";
+            var (url, sha) = UpdateChecker.ParseLatestDllAsset(json);
+            Assert.Equal(
+                "https://github.com/VortexUK/EQ2LexiconACTPlugin/releases/download/v0.1.12/EQ2Lexicon.ACTPlugin.dll",
+                url);
+            Assert.Equal("f44ef3243eb0b6392132894d3b535da6aa0a17a933a60ba72c9bbcb925cdb270", sha);
+        }
+
+        [Fact]
+        public void ParseLatestDllAsset_ReturnsEmptyWhenDigestMissing()
+        {
+            // Sometimes the digest field is absent (pre-2024 releases,
+            // very fresh releases before GH backfills). Installer must
+            // refuse to auto-stage in that case — having no digest
+            // string is the signal.
+            var json = @"[{
+                ""tag_name"": ""v0.1.12"",
+                ""draft"": false,
+                ""assets"": [
+                    {
+                        ""name"": ""EQ2Lexicon.ACTPlugin.dll"",
+                        ""browser_download_url"": ""https://example/EQ2Lexicon.ACTPlugin.dll""
+                    }
+                ]
+            }]";
+            var (url, sha) = UpdateChecker.ParseLatestDllAsset(json);
+            Assert.Equal("https://example/EQ2Lexicon.ACTPlugin.dll", url);
+            Assert.Equal("", sha);
+        }
+
+        [Fact]
+        public void ParseLatestDllAsset_SkipsNonDllAssets()
+        {
+            // Hypothetical future: a release attaches additional assets
+            // (signature file, source zip). Pick the .dll one specifically.
+            var json = @"[{
+                ""tag_name"": ""v0.1.12"",
+                ""draft"": false,
+                ""assets"": [
+                    {""name"": ""checksums.txt"", ""browser_download_url"": ""https://example/checksums.txt"", ""digest"": ""sha256:aaa""},
+                    {""name"": ""EQ2Lexicon.ACTPlugin.dll"", ""browser_download_url"": ""https://example/plugin.dll"", ""digest"": ""sha256:bbb""}
+                ]
+            }]";
+            var (url, sha) = UpdateChecker.ParseLatestDllAsset(json);
+            Assert.Equal("https://example/plugin.dll", url);
+            Assert.Equal("bbb", sha);
+        }
+
+        [Fact]
+        public void ParseLatestDllAsset_ReturnsEmptyForEmptyFeed()
+        {
+            Assert.Equal(("", ""), UpdateChecker.ParseLatestDllAsset(""));
+            Assert.Equal(("", ""), UpdateChecker.ParseLatestDllAsset("[]"));
+            Assert.Equal(("", ""), UpdateChecker.ParseLatestDllAsset("not json"));
+        }
+
+        [Fact]
+        public void ParseLatestDllAsset_DigestPrefixCaseInsensitive()
+        {
+            // GH consistently uses lowercase "sha256:" but pin the
+            // prefix match as case-insensitive so a future variation
+            // (SHA256:) doesn't silently empty the digest.
+            var json = @"[{
+                ""tag_name"": ""v0.1.12"",
+                ""draft"": false,
+                ""assets"": [{
+                    ""name"": ""x.dll"",
+                    ""browser_download_url"": ""https://e/x.dll"",
+                    ""digest"": ""SHA256:DEADBEEF""
+                }]
+            }]";
+            var (_, sha) = UpdateChecker.ParseLatestDllAsset(json);
+            Assert.Equal("deadbeef", sha);
+        }
+
         // ── CheckAsync (end-to-end orchestration) ─────────────────────────
 
         private class StubFetcher : IReleaseFeedFetcher

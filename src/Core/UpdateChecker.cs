@@ -140,6 +140,111 @@ namespace EQ2Lexicon.ACTPlugin
         }
 
         /// <summary>
+        /// Walk the GitHub release feed for the FIRST non-draft release
+        /// (newest published) and pull out the URL + SHA-256 digest of
+        /// the EQ2Lexicon.ACTPlugin.dll asset attached to it.
+        ///
+        /// Used by the self-update flow (v0.1.12+) — the URL feeds
+        /// HttpClient.GetByteArrayAsync, the digest feeds
+        /// PluginUpdater's hash verification.
+        ///
+        /// Returns empty strings when:
+        ///   * JSON is empty / malformed
+        ///   * no non-draft release exists
+        ///   * the release has no asset matching "*.ACTPlugin.dll"
+        ///   * the asset has no `digest` field (very recent GitHub
+        ///     releases occasionally surface before the digest backfill
+        ///     completes) — the installer must refuse to auto-stage
+        ///     in that case rather than ship an unverified binary
+        ///
+        /// Parser is a small hand-rolled walk over the JSON shape rather
+        /// than full deserialisation, matching the convention used by
+        /// ParseReleaseVersions. The shape we depend on:
+        ///   [ { "tag_name": "v0.1.12", "draft": false,
+        ///       "assets": [ { "name": "...dll",
+        ///                     "browser_download_url": "https://...",
+        ///                     "digest": "sha256:abc..." } ] } ]
+        /// </summary>
+        public static (string Url, string Sha256Hex) ParseLatestDllAsset(string json)
+        {
+            if (string.IsNullOrEmpty(json)) return ("", "");
+
+            // Find the first release block — defined as the first
+            // `"tag_name"` whose corresponding `"draft"` is false (or
+            // absent). The block runs until the matching closing brace
+            // at the top object level. We approximate that as "the
+            // next `"tag_name"`" — assets always appear before the
+            // next release object since GH returns assets inline.
+            int idx = 0;
+            while (idx < json.Length)
+            {
+                int tagAt = json.IndexOf("\"tag_name\"", idx, StringComparison.Ordinal);
+                if (tagAt < 0) return ("", "");
+                // Block end = the next "tag_name" (next release) or end of JSON.
+                int nextTagAt = json.IndexOf("\"tag_name\"", tagAt + 1, StringComparison.Ordinal);
+                int blockEnd = nextTagAt < 0 ? json.Length : nextTagAt;
+                var block = json.Substring(tagAt, blockEnd - tagAt);
+                idx = blockEnd;
+
+                // Skip drafts.
+                if (LooksLikeDraft(block)) continue;
+
+                // Find the assets array and within it the first asset
+                // whose `"name"` ends with ".dll" (we ship exactly one
+                // DLL today; matching by suffix accommodates future
+                // multi-asset releases).
+                var (url, sha) = FindDllAsset(block);
+                return (url, sha);
+            }
+            return ("", "");
+        }
+
+        private static bool LooksLikeDraft(string block)
+        {
+            int draftAt = block.IndexOf("\"draft\"", StringComparison.Ordinal);
+            if (draftAt < 0) return false;
+            int colon = block.IndexOf(':', draftAt);
+            if (colon < 0) return false;
+            var after = block.Substring(colon + 1).TrimStart();
+            return after.StartsWith("true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static (string Url, string Sha256Hex) FindDllAsset(string releaseBlock)
+        {
+            // Walk every `"name"` field in the block; for each one ending
+            // ".dll", pluck the adjacent `browser_download_url` and
+            // `digest`. GitHub orders the JSON keys consistently inside
+            // each asset object so the adjacent search is stable, but we
+            // search both directions defensively.
+            int idx = 0;
+            while (idx < releaseBlock.Length)
+            {
+                int nameAt = releaseBlock.IndexOf("\"name\"", idx, StringComparison.Ordinal);
+                if (nameAt < 0) return ("", "");
+                var nameVal = UploadClient.ExtractJsonString(releaseBlock.Substring(nameAt), "name") ?? "";
+                idx = nameAt + "\"name\"".Length;
+
+                if (!nameVal.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)) continue;
+
+                // Found a DLL asset. The browser_download_url + digest
+                // for THIS asset are within the next ~1KB of JSON.
+                int probeEnd = Math.Min(releaseBlock.Length, idx + 1500);
+                var probe = releaseBlock.Substring(idx, probeEnd - idx);
+                var url = UploadClient.ExtractJsonString(probe, "browser_download_url") ?? "";
+                var digest = UploadClient.ExtractJsonString(probe, "digest") ?? "";
+
+                // Digest is shaped "sha256:HEX..." — strip the algo prefix.
+                var sha = "";
+                if (digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
+                {
+                    sha = digest.Substring("sha256:".Length).Trim().ToLowerInvariant();
+                }
+                return (url, sha);
+            }
+            return ("", "");
+        }
+
+        /// <summary>
         /// Convert "v0.1.8" or "0.1.8" (with optional "-rc1" suffix) into
         /// a <see cref="Version"/>. Returns null on anything we can't make
         /// sense of so the caller can filter.
@@ -256,7 +361,17 @@ namespace EQ2Lexicon.ACTPlugin
                 var json = await fetcher.FetchAsync().ConfigureAwait(false);
                 if (string.IsNullOrEmpty(json)) return result;
                 var versions = ParseReleaseVersions(json);
-                return Compute(currentVersion ?? new Version(0, 0, 0), versions);
+                var status = Compute(currentVersion ?? new Version(0, 0, 0), versions);
+
+                // Latest-release asset info for the self-update flow.
+                // Best-effort: missing/malformed asset metadata leaves
+                // both strings empty and the installer falls back to
+                // opening the browser instead of staging.
+                var (url, sha) = ParseLatestDllAsset(json);
+                status.LatestDllUrl = url;
+                status.LatestDllSha256 = sha;
+
+                return status;
             }
             catch
             {

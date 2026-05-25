@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace EQ2Lexicon.ACTPlugin
@@ -77,8 +78,17 @@ namespace EQ2Lexicon.ACTPlugin
         private readonly FlowLayoutPanel _versionCard;
         private readonly Label _versionGlyph;
         private readonly Label _versionText;
+        private readonly Button _versionInstallBtn;
         private readonly Button _versionDownloadBtn;
+        private readonly Label _versionInstallStatus;
         private string _latestReleaseUrl = "";
+
+        // Plugin-supplied callback that runs the download + verify +
+        // stage flow when the user clicks "Install update". Held as a
+        // delegate so SettingsPanel doesn't take a hard reference on
+        // the Plugin class — symmetrical with the existing _onSave +
+        // GetLastCapturedPayloadJson hooks.
+        public Func<Task>? OnInstallUpdateClicked { get; set; }
 
         // Updated by the Plugin when a new encounter is captured. Held as a
         // delegate so we don't take a hard reference on EncounterCapture from
@@ -117,9 +127,11 @@ namespace EQ2Lexicon.ACTPlugin
             // populates it via SetUpdateStatus once the GitHub fetch
             // returns. Sized like a card but presented inline above
             // CONFIGURATION because it's a status, not a settings group.
+            // Card now uses TopDown so the install-status label can
+            // appear on its own row below the buttons when present.
             _versionCard = new FlowLayoutPanel
             {
-                FlowDirection = FlowDirection.LeftToRight,
+                FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
@@ -138,6 +150,18 @@ namespace EQ2Lexicon.ACTPlugin
                     e.Graphics.DrawRectangle(pen, 0, 0, r.Width - 1, r.Height - 1);
                 }
             };
+
+            // Row 1: glyph + text label, side by side.
+            var versionRow = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = T.Card,
+                Margin = new Padding(0),
+                Padding = new Padding(0),
+            };
             _versionGlyph = new Label
             {
                 Text = "●",
@@ -154,12 +178,31 @@ namespace EQ2Lexicon.ACTPlugin
                 ForeColor = T.Text,
                 AutoSize = true,
                 BackColor = T.Card,
-                MaximumSize = new Size(CardWidth - 200, 0),
-                Margin = new Padding(0, 6, 12, 0),
+                MaximumSize = new Size(CardWidth - 60, 0),
+                Margin = new Padding(0, 6, 0, 0),
             };
-            _versionDownloadBtn = MakeButton("Download update", primary: true);
-            _versionDownloadBtn.Margin = new Padding(0, 0, 0, 0);
-            _versionDownloadBtn.Visible = false;
+            EnableUnicodeFontFallback(_versionText);
+            versionRow.Controls.Add(_versionGlyph);
+            versionRow.Controls.Add(_versionText);
+            _versionCard.Controls.Add(versionRow);
+
+            // Row 2: button row with Install (primary) + Download (secondary).
+            var versionButtonRow = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = T.Card,
+                Margin = new Padding(0, 10, 0, 0),
+                Padding = new Padding(0),
+                Visible = false,  // toggled with the buttons via SetUpdateStatus
+            };
+            _versionInstallBtn = MakeButton("Install update", primary: true);
+            _versionInstallBtn.Margin = new Padding(0);
+            _versionInstallBtn.Click += OnVersionInstallClicked;
+            _versionDownloadBtn = MakeButton("Download in browser", primary: false);
+            _versionDownloadBtn.Margin = new Padding(8, 0, 0, 0);
             _versionDownloadBtn.Click += (s, e) =>
             {
                 if (string.IsNullOrEmpty(_latestReleaseUrl)) return;
@@ -174,9 +217,26 @@ namespace EQ2Lexicon.ACTPlugin
                     // user can copy it if the click no-ops.
                 }
             };
-            _versionCard.Controls.Add(_versionGlyph);
-            _versionCard.Controls.Add(_versionText);
-            _versionCard.Controls.Add(_versionDownloadBtn);
+            versionButtonRow.Controls.Add(_versionInstallBtn);
+            versionButtonRow.Controls.Add(_versionDownloadBtn);
+            _versionCard.Controls.Add(versionButtonRow);
+
+            // Row 3: progress / result of an install click. Shown only
+            // once the user clicks "Install update".
+            _versionInstallStatus = new Label
+            {
+                Text = "",
+                Font = new Font("Segoe UI", 8.75f, FontStyle.Italic),
+                ForeColor = T.TextMuted,
+                AutoSize = true,
+                BackColor = T.Card,
+                MaximumSize = new Size(CardWidth - 32, 0),
+                Margin = new Padding(0, 8, 0, 0),
+                Visible = false,
+            };
+            EnableUnicodeFontFallback(_versionInstallStatus);
+            _versionCard.Controls.Add(_versionInstallStatus);
+
             stack.Controls.Add(_versionCard);
 
             // ── Card: Configuration ────────────────────────────────────────
@@ -370,19 +430,33 @@ namespace EQ2Lexicon.ACTPlugin
             }
 
             _latestReleaseUrl = result.LatestReleaseUrl;
+            // Install button needs both a download URL and a digest to
+            // verify against. Without a digest we refuse to auto-install
+            // (PluginUpdater enforces this) — show only the browser fallback.
+            var canAutoInstall =
+                !string.IsNullOrWhiteSpace(result.LatestDllUrl) &&
+                !string.IsNullOrWhiteSpace(result.LatestDllSha256);
+
+            // The button row container shows/hides the buttons together;
+            // Install vs Download visibility within the row is gated by
+            // whether auto-install is possible.
+            var buttonRow = _versionInstallBtn.Parent;
             switch (result.Status)
             {
                 case UpdateStatus.Current:
                     _versionGlyph.ForeColor = T.Success;
                     _versionText.ForeColor = T.TextMuted;
                     _versionText.Text = $"v{result.CurrentVersion} — up to date";
-                    _versionDownloadBtn.Visible = false;
+                    if (buttonRow != null) buttonRow.Visible = false;
+                    _versionInstallStatus.Visible = false;
                     break;
                 case UpdateStatus.SlightlyStale:
                     _versionGlyph.ForeColor = T.Warning;
                     _versionText.ForeColor = T.Text;
                     _versionText.Text =
                         $"Update available: you're on v{result.CurrentVersion}, latest is v{result.LatestVersion}.";
+                    if (buttonRow != null) buttonRow.Visible = true;
+                    _versionInstallBtn.Visible = canAutoInstall;
                     _versionDownloadBtn.Visible = true;
                     break;
                 case UpdateStatus.TooOld:
@@ -391,16 +465,80 @@ namespace EQ2Lexicon.ACTPlugin
                     _versionText.Text =
                         $"v{result.CurrentVersion} is too old (latest v{result.LatestVersion}). " +
                         "Uploads are blocked until you update.";
+                    if (buttonRow != null) buttonRow.Visible = true;
+                    _versionInstallBtn.Visible = canAutoInstall;
                     _versionDownloadBtn.Visible = true;
                     break;
                 case UpdateStatus.DevBuild:
                     _versionGlyph.ForeColor = T.TextMuted;
                     _versionText.ForeColor = T.TextMuted;
                     _versionText.Text = $"v{result.CurrentVersion} (dev build)";
-                    _versionDownloadBtn.Visible = false;
+                    if (buttonRow != null) buttonRow.Visible = false;
+                    _versionInstallStatus.Visible = false;
                     break;
             }
             _versionCard.Visible = true;
+        }
+
+        /// <summary>
+        /// Update the small italic status line under the version
+        /// banner's button row. Shown after the user clicks "Install
+        /// update" — runs through "Downloading…" → "Verifying…" →
+        /// either the staged-OK message or a failure reason. Marshals
+        /// to the UI thread because Plugin's download orchestration
+        /// runs on a worker.
+        /// </summary>
+        public void SetUpdateInstallStatus(string message, bool success)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke((Action)(() => SetUpdateInstallStatus(message, success)));
+                return;
+            }
+            _versionInstallStatus.Text = message ?? "";
+            _versionInstallStatus.ForeColor = success ? T.Success : T.Danger;
+            _versionInstallStatus.Visible = !string.IsNullOrEmpty(message);
+            // Disable the buttons after a successful stage so the user
+            // can't accidentally re-download. A failed install leaves
+            // them clickable so they can retry or fall back to browser.
+            if (success)
+            {
+                _versionInstallBtn.Enabled = false;
+                _versionDownloadBtn.Enabled = false;
+            }
+        }
+
+        private async void OnVersionInstallClicked(object sender, EventArgs e)
+        {
+            if (OnInstallUpdateClicked == null) return;
+            // Gray out immediately so a fast double-click doesn't kick
+            // off two concurrent downloads. Plugin's orchestration
+            // re-enables only on failure.
+            _versionInstallBtn.Enabled = false;
+            _versionInstallStatus.ForeColor = T.TextMuted;
+            _versionInstallStatus.Text = "Starting…";
+            _versionInstallStatus.Visible = true;
+            try
+            {
+                await OnInstallUpdateClicked();
+            }
+            catch (Exception ex)
+            {
+                // Belt-and-brace — Plugin should surface errors via
+                // SetUpdateInstallStatus, but if something escapes
+                // here we still want a visible message rather than a
+                // mysteriously-disabled button.
+                SetUpdateInstallStatus("Install failed: " + ex.Message, success: false);
+            }
+            finally
+            {
+                // Only re-enable on failure (Success path disables
+                // both buttons explicitly in SetUpdateInstallStatus).
+                if (_versionInstallStatus.ForeColor != T.Success)
+                {
+                    _versionInstallBtn.Enabled = true;
+                }
+            }
         }
 
         /// <summary>
