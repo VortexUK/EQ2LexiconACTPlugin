@@ -17,6 +17,8 @@ The UI assembly `<ProjectReference>`s Core and excludes `Core/**/*.cs` from its 
 
 The split also unlocks GitHub Actions CI: the workflow at `.github/workflows/ci.yml` builds Core + tests + runs coverage on `windows-latest`, never touching the UI assembly.
 
+**Single-file distribution via ILRepack** (added in v0.1.7): the split is a build/test convenience; users still get one DLL. On Release builds the `ILRepackMergeCore` target in `src/EQ2Lexicon.ACTPlugin.csproj` merges `EQ2Lexicon.ACTPlugin.Core.dll` into the UI DLL (via `ILRepack.Lib.MSBuild.Task`) and deletes the standalone Core DLL/PDB from the UI bin folder. The Core project still produces its own DLL in `src/Core/bin/Release/net48/` for the test project to reference. Debug builds skip the merge so the VS debugger isn't slowed. v0.1.6 shipped without this and users got `Could not load file or assembly 'EQ2Lexicon.ACTPlugin.Core'` because the release workflow only uploads the UI DLL — see commit `3d4051b`.
+
 ## Key files
 
 | File | Purpose |
@@ -33,9 +35,9 @@ The split also unlocks GitHub Actions CI: the workflow at `.github/workflows/ci.
 
 ## Versioning + releases
 
-- Version lives in `src/EQ2Lexicon.ACTPlugin.csproj` `<Version>`. Bump it when shipping.
+- Version lives in `src/EQ2Lexicon.ACTPlugin.csproj` `<Version>`. Bump **both** csproj files (UI + Core) in lockstep when shipping — the Core version is referenced in error-message text and stays meaningful for diagnostics even after ILRepack folds it in.
 - Releases are tags `v0.1.x` pushed to GitHub, with the DLL attached as a release asset.
-- DLL output path after `dotnet build -c Release`: `src/bin/Release/net48/EQ2Lexicon.ACTPlugin.dll`.
+- DLL output path after `dotnet build -c Release`: `src/bin/Release/net48/EQ2Lexicon.ACTPlugin.dll` — a single self-contained DLL (Core is ILRepacked in; see Architecture above).
 
 Release recipe — fully automated end-to-end:
 
@@ -122,6 +124,7 @@ See the audit findings + fixes in commits `9eb39e0` (v0.1.4) and `5f9e11a` (v0.1
 
 - GitHub Releases is the only distribution channel. Direct download URL pattern:
   `https://github.com/VortexUK/EQ2LexiconACTPlugin/releases/download/vX.Y.Z/EQ2Lexicon.ACTPlugin.dll`
+- **Single self-contained DLL** — even though the source is split across UI + Core assemblies, the release is one file. ILRepack merges Core into the UI DLL on Release builds; the release workflow uploads only that merged DLL. Do not switch to a two-file release without updating `release.yml`'s upload list **and** the install-instructions block in its release-notes generator (line ~85) together — v0.1.6 forgot the upload step and broke every fresh install.
 - The DLL is unsigned. Windows SmartScreen may warn on first run; users click through. A code-signing certificate would fix this but costs ~$200/yr — not currently worth it.
 
 ## CI/CD gaps
@@ -137,6 +140,7 @@ Comprehensive pipeline status as of v0.1.5 + the B2.16 sprint:
 | Vulnerability scanning | ✅ `dotnet list package --vulnerable` in pre-push + CI |
 | Dependabot | ✅ `.github/dependabot.yml` |
 | Core/UI assembly split (so CI can build without ACT) | ✅ `src/Core/` |
+| Single-DLL distribution despite the split | ✅ ILRepack merges Core into the UI DLL on Release builds (`ILRepackMergeCore` target) |
 | Auto-release on `v*` tag push | ✅ `.github/workflows/release.yml` — builds UI DLL on the runner via extracted ACT, drafts release with notes + DLL attached, maintainer just publishes |
 | Authenticode-signed DLL | ❌ Skipped — ~$200/yr cert not worth it; users click through SmartScreen |
 | Changelog automation | ❌ Skipped — release notes hand-written per release |

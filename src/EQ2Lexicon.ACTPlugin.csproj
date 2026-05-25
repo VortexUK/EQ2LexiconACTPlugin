@@ -22,11 +22,55 @@
     <ActInstallDir Condition="'$(ActInstallDir)' == ''">C:\Program Files (x86)\Advanced Combat Tracker</ActInstallDir>
 
     <!-- Build metadata shown in ACT's plugin list -->
-    <Version>0.1.6</Version>
+    <Version>0.1.7</Version>
     <Company>EQ2 Lexicon</Company>
     <Product>EQ2 Lexicon Uploader</Product>
     <Description>Uploads ACT-parsed encounters to the EQ2 Lexicon site.</Description>
   </PropertyGroup>
+
+  <!--
+    ILRepack merges the sibling Core.dll back into the UI assembly so the
+    release ships as a single self-contained DLL — the same UX users had
+    before the v0.1.6 assembly split. Without this, ACT would load the UI
+    DLL, fail to bind 'EQ2Lexicon.ACTPlugin.Core' from the Plugins folder,
+    and throw a "Could not load file or assembly" error (the v0.1.6 bug).
+
+    Internalize=true: Core's public types become internal to the merged
+    DLL, so nothing outside the plugin can take a dependency on them.
+    Tests still reference the standalone Core.dll in its own bin folder,
+    so InternalsVisibleTo on Core continues to work for the test project.
+
+    Release-only so VS Debug builds aren't slowed by the merge step.
+  -->
+  <ItemGroup>
+    <PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.37" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!--
+    AfterTargets="AfterBuild" (the legacy extensibility point) fires once
+    per build invocation, unlike AfterTargets="Build" which fires twice
+    in SDK-style projects (once after inner Build, once after outer Build)
+    and would re-merge the already-merged DLL with itself.
+  -->
+  <Target Name="ILRepackMergeCore" AfterTargets="AfterBuild"
+          Condition="'$(Configuration)' == 'Release' AND Exists('$(OutputPath)EQ2Lexicon.ACTPlugin.Core.dll')">
+    <ItemGroup>
+      <_MergeInputs Include="$(OutputPath)$(AssemblyName).dll" />
+      <_MergeInputs Include="$(OutputPath)EQ2Lexicon.ACTPlugin.Core.dll" />
+    </ItemGroup>
+    <ILRepack
+      Parallel="true"
+      Internalize="true"
+      DebugInfo="true"
+      InputAssemblies="@(_MergeInputs)"
+      OutputFile="$(OutputPath)$(AssemblyName).dll"
+      TargetKind="Dll" />
+    <!-- After the merge the standalone Core.dll/.pdb in the UI bin folder
+         are dead weight; delete them so the bin folder matches what we
+         actually ship. Core's own project bin (src/Core/bin/) keeps its
+         copy for the test project to reference. -->
+    <Delete Files="$(OutputPath)EQ2Lexicon.ACTPlugin.Core.dll;$(OutputPath)EQ2Lexicon.ACTPlugin.Core.pdb" />
+  </Target>
 
   <!--
     ACT itself is the reference assembly (the EXE is a .NET assembly that
