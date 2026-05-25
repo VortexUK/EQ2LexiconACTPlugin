@@ -185,7 +185,10 @@ namespace EQ2Lexicon.ACTPlugin
             {
                 var snapshot = EncounterCapture.CaptureSnapshot(enc);
                 title = snapshot.Title;
-                var payload = PayloadBuilder.BuildPayload(ActHelpers.GetLoggingCharacterName(), snapshot);
+                var payload = PayloadBuilder.BuildPayload(
+                    ActHelpers.GetLoggingCharacterName(),
+                    ActHelpers.GetLoggingServerName(),
+                    snapshot);
                 PayloadBuilder.SanitizePayload(payload);
                 json = PayloadBuilder.SerializeJson(payload);
             }

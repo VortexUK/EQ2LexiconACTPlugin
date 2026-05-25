@@ -34,11 +34,26 @@ namespace EQ2Lexicon.ACTPlugin
             { "Threat (Out)", 100 },
         };
 
-        public static Dictionary<string, object?> BuildPayload(string loggerName, EncounterSnapshot enc)
+        /// <summary>
+        /// Build the upload payload.
+        ///
+        /// <paramref name="loggerServer"/> is the EQ2 server name
+        /// (Varsoon / Kaladim / Butcherblock / …) detected from the
+        /// active log file's parent directory via
+        /// <c>LogPathParser.ParseServerName</c>. Pass empty string when
+        /// unknown — server falls back to its EQ2_WORLD env-var default
+        /// and the field is sent as "" so old server versions that
+        /// don't know about the field simply ignore it.
+        /// </summary>
+        public static Dictionary<string, object?> BuildPayload(
+            string loggerName,
+            string loggerServer,
+            EncounterSnapshot enc)
         {
             return new Dictionary<string, object?>
             {
                 ["logger_name"] = loggerName,
+                ["logger_server"] = loggerServer ?? "",
                 ["encounter"] = BuildEncounter(enc),
                 ["combatants"] = BuildCombatants(enc),
                 ["damage_types"] = BuildDamageTypes(enc),

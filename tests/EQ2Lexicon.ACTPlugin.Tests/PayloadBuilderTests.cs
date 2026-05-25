@@ -450,13 +450,35 @@ namespace EQ2Lexicon.ACTPlugin.Tests
             enc.Combatants.Add(Player("Menludiir"));
             enc.AllyNames.Add("Menludiir");
 
-            var payload = PayloadBuilder.BuildPayload("Menludiir", enc);
+            var payload = PayloadBuilder.BuildPayload("Menludiir", "Varsoon", enc);
 
             Assert.Equal("Menludiir", payload["logger_name"]);
+            Assert.Equal("Varsoon", payload["logger_server"]);
             Assert.IsType<Dictionary<string, object?>>(payload["encounter"]);
             Assert.IsType<List<Dictionary<string, object?>>>(payload["combatants"]);
             Assert.IsType<List<Dictionary<string, object?>>>(payload["damage_types"]);
             Assert.IsType<List<Dictionary<string, object?>>>(payload["attack_types"]);
+        }
+
+        [Fact]
+        public void BuildPayload_EmptyServerSentAsEmptyString()
+        {
+            // The plugin sends "" when the log path doesn't fit the
+            // per-server layout (legacy generic log, no log picked up
+            // yet). Server reads "" as "fall back to EQ2_WORLD".
+            // Pinning the wire shape so the server's contract stays
+            // unambiguous: it's always a string, never missing/null.
+            var enc = MinimalEncounter();
+            enc.Combatants.Add(Player("Menludiir"));
+            enc.AllyNames.Add("Menludiir");
+
+            var payload = PayloadBuilder.BuildPayload("Menludiir", "", enc);
+            Assert.Equal("", payload["logger_server"]);
+
+            // Null defensiveness — caller shouldn't pass null but if
+            // they do we must not crash or emit JSON null.
+            var payload2 = PayloadBuilder.BuildPayload("Menludiir", null!, enc);
+            Assert.Equal("", payload2["logger_server"]);
         }
 
         // ── OutgoingGroupToSwingType constant ───────────────────────────────

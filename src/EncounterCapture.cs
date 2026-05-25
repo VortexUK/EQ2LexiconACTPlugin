@@ -215,7 +215,10 @@ namespace EQ2Lexicon.ACTPlugin
             // ACT-coupled extraction separate from the pure transformation
             // so the latter is unit-testable.
             var snapshot = CaptureSnapshot(enc);
-            var payload = PayloadBuilder.BuildPayload(ActHelpers.GetLoggingCharacterName(), snapshot);
+            var payload = PayloadBuilder.BuildPayload(
+                ActHelpers.GetLoggingCharacterName(),
+                ActHelpers.GetLoggingServerName(),
+                snapshot);
             PayloadBuilder.SanitizePayload(payload);
             var json = PayloadBuilder.SerializeJson(payload);
 

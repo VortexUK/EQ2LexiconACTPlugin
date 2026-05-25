@@ -555,10 +555,16 @@ namespace EQ2Lexicon.ACTPlugin
         /// Show the current ACT logging character at the top of the
         /// blacklist card so the user can easily see what name to add. Also
         /// drives the header pill colour.
+        ///
+        /// Appends the detected EQ2 server in parens when known
+        /// (e.g. "Kayleigh (Varsoon)") — derived from the log file's
+        /// parent directory; empty/unknown is silently omitted rather
+        /// than drawing attention to the missing data point.
         /// </summary>
         private void UpdateCurrentCharLabel()
         {
             var currentChar = ActHelpers.GetLoggingCharacterName();
+            var server = ActHelpers.GetLoggingServerName();
 
             if (string.IsNullOrWhiteSpace(currentChar))
             {
@@ -567,14 +573,18 @@ namespace EQ2Lexicon.ACTPlugin
                 return;
             }
 
+            var nameWithServer = string.IsNullOrWhiteSpace(server)
+                ? currentChar
+                : $"{currentChar} ({server})";
+
             if (_config.IsBlacklisted(currentChar))
             {
-                _currentCharLabel.Text = $"Currently logging as: {currentChar}  —  blacklisted";
+                _currentCharLabel.Text = $"Currently logging as: {nameWithServer}  —  blacklisted";
                 _currentCharLabel.ForeColor = T.Warning;
             }
             else
             {
-                _currentCharLabel.Text = $"Currently logging as: {currentChar}";
+                _currentCharLabel.Text = $"Currently logging as: {nameWithServer}";
                 _currentCharLabel.ForeColor = T.Text;
             }
         }

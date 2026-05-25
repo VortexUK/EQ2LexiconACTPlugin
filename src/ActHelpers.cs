@@ -58,6 +58,29 @@ namespace EQ2Lexicon.ACTPlugin
         }
 
         /// <summary>
+        /// Return the EQ2 server name (Varsoon, Kaladim, Butcherblock,
+        /// etc.) derived from the active log file's parent directory.
+        /// Empty when the path doesn't fit the per-server layout (user
+        /// is on the legacy /logs/eq2log.txt path, ACT hasn't picked
+        /// up a log yet, etc.) — server falls back to its EQ2_WORLD
+        /// env-var default in that case.
+        ///
+        /// Parsing logic lives in the Core <see cref="LogPathParser"/>
+        /// so it's unit-testable without ACT.
+        /// </summary>
+        public static string GetLoggingServerName()
+        {
+            try
+            {
+                return LogPathParser.ParseServerName(ActGlobals.oFormActMain?.LogFilePath);
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        /// <summary>
         /// Production location for the plugin config XML. Lives in
         /// %APPDATA%\Advanced Combat Tracker\Config\ so it survives ACT
         /// reinstalls and plugin upgrades. Kept here (in the ACT-coupled
