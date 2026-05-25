@@ -49,6 +49,25 @@ namespace EQ2Lexicon.ACTPlugin
         // UI so the user knows we didn't quietly drop a real fight.
         private const double MaxPlaceholderWaitSeconds = 60.0;
 
+        // Grace window for "is this encounter pre-existing or imported?".
+        // An encounter whose StartTime is more than this far before
+        // _instanceStartedAt is treated as not-ours: either it was already
+        // in zone.Items when the plugin loaded (user enabled mid-session),
+        // or the user just imported a log file with old fights. Either
+        // way the auto path skips it — the manual right-click path stays
+        // as the escape hatch.
+        //
+        // 5 minutes accommodates an in-progress fight that started
+        // shortly before plugin-enable (we don't want to drop the current
+        // raid pull just because the plugin loaded 30s into it).
+        private const double InstanceStartGraceSeconds = 300.0;
+
+        // Stamped once in the ctor — used to draw the "before me" line.
+        // DateTime.Now (local) because every other timestamp from ACT in
+        // this class is also local (StartTime/EndTime are ACT-emitted
+        // local-clock values).
+        private readonly DateTime _instanceStartedAt = DateTime.Now;
+
         // Last captured artefact — read by the settings panel for display.
         public string LastCapturedEncId { get; private set; } = "";
         public string LastCapturedTitle { get; private set; } = "";
@@ -118,6 +137,32 @@ namespace EQ2Lexicon.ACTPlugin
                 // Not settled yet — ACT may still be appending actions.
                 if ((now - enc.EndTime).TotalSeconds < SettleSeconds) continue;
 
+                // Import/Merge zone is ACT's bucket for imported logs
+                // and merged/edited encounters. Never auto-upload — those
+                // are user-customised, not authoritative parses. The
+                // manual right-click path enforces this too (greyed out).
+                if (EncounterZone.IsImportOrMerge(enc.ZoneName))
+                {
+                    MarkProcessedNoCapture(encid);
+                    OnSkipped?.Invoke(
+                        $"skipped ({encid}: Import/Merge zone — customised parses aren't uploaded)");
+                    continue;
+                }
+
+                // Pre-existing or freshly-imported encounter — the user
+                // didn't actively play this one under our watch. Either
+                // they enabled the plugin mid-session (these were already
+                // here), or they just imported a log file. Auto path
+                // skips; manual right-click upload still works as the
+                // escape hatch for "yes actually, please upload that".
+                if (enc.StartTime < _instanceStartedAt.AddSeconds(-InstanceStartGraceSeconds))
+                {
+                    MarkProcessedNoCapture(encid);
+                    OnSkipped?.Invoke(
+                        $"skipped ({encid}: started before plugin enabled — likely import or pre-existing)");
+                    continue;
+                }
+
                 // Placeholder title: defer in the hope ACT fills it in on
                 // a later poll. Past MaxPlaceholderWaitSeconds, give up
                 // and surface a skip reason so the user doesn't think the
@@ -129,21 +174,33 @@ namespace EQ2Lexicon.ACTPlugin
                         // Don't add to _processed — retry next tick.
                         continue;
                     }
-                    lock (_lock)
-                    {
-                        _processed.Add(encid);
-                        _processedQueue.Enqueue(encid);
-                        while (_processedQueue.Count > ProcessedCap)
-                        {
-                            _processed.Remove(_processedQueue.Dequeue());
-                        }
-                    }
+                    MarkProcessedNoCapture(encid);
                     OnSkipped?.Invoke(
                         $"skipped ({encid}: title never resolved past '{enc.Title}')");
                     continue;
                 }
 
                 ProcessEncounter(enc, encid);
+            }
+        }
+
+        /// <summary>
+        /// Add an encid to the processed set without producing a capture.
+        /// Used by the three "skip reasons" branches above (Import/Merge
+        /// zone, pre-plugin-startup encounter, placeholder title that
+        /// never resolved) — all of them need to evict the encid from
+        /// future poll iterations, none want to fire OnCaptured.
+        /// </summary>
+        private void MarkProcessedNoCapture(string encid)
+        {
+            lock (_lock)
+            {
+                _processed.Add(encid);
+                _processedQueue.Enqueue(encid);
+                while (_processedQueue.Count > ProcessedCap)
+                {
+                    _processed.Remove(_processedQueue.Dequeue());
+                }
             }
         }
 

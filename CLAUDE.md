@@ -25,9 +25,10 @@ The split also unlocks GitHub Actions CI: the workflow at `.github/workflows/ci.
 |---|---|
 | `src/Plugin.cs` | `IActPluginV1` entry point. ACT calls `InitPlugin`/`DeInitPlugin`. Resolves the config path via `ActHelpers.GetConfigPath()` and passes it to `PluginConfig.Load`/`Save`. Owns lifecycles of `PluginConfig`, `SettingsPanel`, `EncounterCapture`, `UploadClient`. |
 | `src/SettingsPanel.cs` | WinForms settings UI hosted in ACT's plugin tab. Dark-theme card layout (`T` static class holds every colour). Three cards: Configuration / Logging As / Last Captured. Persistence happens via the `_onSave` callback so the panel stays path-free. |
-| `src/EncounterCapture.cs` | 2 s polling timer over `ActGlobals.oFormActMain.ActiveZone`. Detects "settled" encounters (no `EndTime` update for `SettleSeconds=15`), converts to `EncounterSnapshot` via the public static `CaptureSnapshot` (reused by the manual-upload path), then calls `PayloadBuilder.BuildPayload` → `SanitizePayload` → `SerializeJson`. Defers placeholder-titled encounters via `EncounterTitle.IsPlaceholder` for up to `MaxPlaceholderWaitSeconds=60` (then raises `OnSkipped` with a user-visible reason). |
+| `src/EncounterCapture.cs` | 2 s polling timer over `ActGlobals.oFormActMain.ActiveZone`. Detects "settled" encounters (no `EndTime` update for `SettleSeconds=15`), converts to `EncounterSnapshot` via the public static `CaptureSnapshot` (reused by the manual-upload path), then calls `PayloadBuilder.BuildPayload` → `SanitizePayload` → `SerializeJson`. Skip reasons (all raise `OnSkipped` with a user-visible message): Import/Merge zone, encounter started before `_instanceStartedAt - InstanceStartGraceSeconds` (= log imports + pre-existing fights), placeholder title that didn't resolve within `MaxPlaceholderWaitSeconds`. The three skip branches share `MarkProcessedNoCapture` so the encid eviction logic isn't duplicated. |
 | `src/ActMenuExtension.cs` | Adds "Upload to EQ2 Lexicon" to ACT's right-click encounter menu. See "ACT UI extension" below for the (undocumented) wiring details. |
 | `src/Core/EncounterTitle.cs` | `IsPlaceholder(title)` — the shared predicate used by both the polling and manual-upload paths to reject encounters ACT hasn't named yet ("Encounter", "Unknown", empty/whitespace). Lives in Core so it's testable without ACT. |
+| `src/Core/EncounterZone.cs` | `IsImportOrMerge(zoneName)` — the shared predicate used by the polling path, the right-click menu's Opening handler (greys out the item), and Plugin's manual-upload handler (defensive re-check). The Import/Merge bucket holds imported logs and merged/edited encounters that we must never upload. |
 | `src/ActHelpers.cs` | Reads the logging character name by parsing the active log file path (`eq2log_<name>.txt`). `ActGlobals.charName` returns `"YOU"` in EQ2 so it can't be used. Also owns `GetConfigPath()` — the `%APPDATA%\Advanced Combat Tracker\Config\` resolver kept here so `PluginConfig` stays ACT-free. |
 | `src/Core/PayloadBuilder.cs` | Pure transform: `EncounterSnapshot` → ingest-JSON dict shape. Owns `OutgoingGroupToSwingType`, `FormatTime` (emits ISO-8601 + Z), `SanitizePayload` (replaces NaN/∞ with 0), and `SerializeJson` (JavaScriptSerializer with an 8 MB ceiling). |
 | `src/Core/Snapshots.cs` | Plain DTOs (`EncounterSnapshot`, `CombatantSnapshot`, `DamageTypeAggregate`, `AttackTypeSnapshot`) that mirror the slice of ACT's data model the payload builder reads. |
@@ -161,6 +162,8 @@ Different from the polling path — bypasses user opt-in gates because the click
 |---|---|---|
 | Blacklist (don't-upload-as) | **bypassed** | enforced |
 | "Enable automatic upload" checkbox | **bypassed** | enforced |
+| Import/Merge zone (`EncounterZone.IsImportOrMerge`) | enforced (menu greyed + defensive re-check) | enforced (skipped with reason) |
+| Pre-plugin-startup encounter | **bypassed** (manual is the escape hatch) | enforced (skipped with reason) |
 | Placeholder title (`EncounterTitle.IsPlaceholder`) | enforced (rejects with "rename in ACT first") | deferred up to 60s, then skipped |
 | API token configured | enforced | enforced |
 | Version not too old | enforced | enforced |

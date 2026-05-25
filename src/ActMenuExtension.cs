@@ -128,7 +128,14 @@ namespace EQ2Lexicon.ACTPlugin
             // Gray out when there's no real encounter selected (zone
             // node, empty area, etc.) so the user gets the right
             // affordance instead of clicking a no-op item.
-            _menuItem.Enabled = GetSelectedEncounter() != null;
+            //
+            // Also greyed out for the Import/Merge zone — those are
+            // user-customised parses (merged fights, imported logs)
+            // that we never want uploaded. The click handler re-checks
+            // defensively in case a fast click somehow races the
+            // Opening event's enable computation.
+            var enc = GetSelectedEncounter();
+            _menuItem.Enabled = enc != null && !EncounterZone.IsImportOrMerge(enc.ZoneName);
         }
 
         private void OnMenuClick(object sender, EventArgs e)

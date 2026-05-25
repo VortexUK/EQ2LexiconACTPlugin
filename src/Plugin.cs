@@ -145,6 +145,18 @@ namespace EQ2Lexicon.ACTPlugin
         {
             if (_settingsPanel == null || _config == null || _uploadClient == null) return;
 
+            // Defensive re-check of the Import/Merge gate even though
+            // the menu item is greyed out for these encounters — a
+            // fast click could in principle race the Opening handler's
+            // enable computation.
+            if (EncounterZone.IsImportOrMerge(enc.ZoneName))
+            {
+                _settingsPanel.SetUploadStatus(
+                    "manual upload skipped (Import/Merge zone — customised parses can't be uploaded)",
+                    success: false);
+                return;
+            }
+
             // Placeholder check uses the SAME predicate as the
             // automatic path so the rule stays consistent. The
             // message tells the user how to fix it themselves.
