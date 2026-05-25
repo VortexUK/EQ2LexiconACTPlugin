@@ -25,8 +25,87 @@ namespace EQ2Lexicon.ACTPlugin.Tests
         {
             // If this trips, double-check we didn't accidentally ship
             // localhost in a release. Plugin user installs depend on it.
+            // The canonical endpoint is the owned subdomain — Railway
+            // is the host today but the plugin shouldn't bake that in.
             var cfg = new PluginConfig();
-            Assert.Equal("https://eq2lexicon.up.railway.app", cfg.ServerUrl);
+            Assert.Equal("https://parses.eq2lexicon.com", cfg.ServerUrl);
+        }
+
+        [Fact]
+        public void Load_MigratesLegacyRailwayUrlToOwnedDomain()
+        {
+            // v0.1.10-and-earlier users had the implicit Railway URL
+            // saved in their config XML. On load, we silently rewrite
+            // it to the owned subdomain so they're insulated from any
+            // future Railway URL change. The next Save persists it.
+            var tmp = Path.GetTempFileName();
+            try
+            {
+                // Write a config XML with the LEGACY default — exactly
+                // what an upgrading user's on-disk file looks like.
+                var legacy = new PluginConfig { ServerUrl = "https://eq2lexicon.up.railway.app" };
+                legacy.Save(tmp);
+
+                var loaded = PluginConfig.Load(tmp);
+                Assert.Equal("https://parses.eq2lexicon.com", loaded.ServerUrl);
+            }
+            finally
+            {
+                File.Delete(tmp);
+            }
+        }
+
+        [Fact]
+        public void Load_DoesNotRewriteCustomServerUrls()
+        {
+            // Self-hosted dev backend, alternative deployment, anything
+            // that ISN'T the legacy Railway default — must be preserved
+            // verbatim. The migration is narrowly scoped on purpose.
+            var tmp = Path.GetTempFileName();
+            try
+            {
+                var custom = new PluginConfig { ServerUrl = "http://localhost:8000" };
+                custom.Save(tmp);
+
+                var loaded = PluginConfig.Load(tmp);
+                Assert.Equal("http://localhost:8000", loaded.ServerUrl);
+            }
+            finally
+            {
+                File.Delete(tmp);
+            }
+        }
+
+        [Fact]
+        public void Load_MigrationIsTolerantOfTrailingSlash()
+        {
+            // The Save path TrimEnds slashes, but if a user manually
+            // edited their XML to include one, we still want to migrate.
+            var tmp = Path.GetTempFileName();
+            try
+            {
+                var legacy = new PluginConfig();
+                legacy.Save(tmp);
+                // Hand-edit the file to add a trailing slash to the URL.
+                var text = File.ReadAllText(tmp);
+                text = text.Replace(
+                    "https://eq2lexicon.up.railway.app",
+                    "https://eq2lexicon.up.railway.app/");
+                // (If the saved default already changed away from the
+                // legacy URL — which it has — there's nothing to replace.
+                // Synthesise the legacy config explicitly instead.)
+                text = text.Replace(
+                    "<ServerUrl>https://parses.eq2lexicon.com</ServerUrl>",
+                    "<ServerUrl>https://eq2lexicon.up.railway.app/</ServerUrl>");
+                File.WriteAllText(tmp, text);
+
+                var loaded = PluginConfig.Load(tmp);
+                Assert.Equal("https://parses.eq2lexicon.com", loaded.ServerUrl);
+            }
+            finally
+            {
+                File.Delete(tmp);
+            }
         }
 
         // ── IsBlacklisted ──────────────────────────────────────────────────

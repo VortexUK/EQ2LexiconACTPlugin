@@ -24,8 +24,25 @@ namespace EQ2Lexicon.ACTPlugin
     /// </summary>
     public class PluginConfig
     {
+        /// <summary>
+        /// Canonical plugin API endpoint. Owned domain — points at
+        /// whatever host serves the API today (Railway as of v0.1.11)
+        /// and stays stable across future infrastructure moves. Plugin
+        /// installs hardcoded against this won't break if the backend
+        /// host changes.
+        /// </summary>
+        internal const string DefaultServerUrl = "https://parses.eq2lexicon.com";
+
+        /// <summary>
+        /// The previous default, kept for one-shot auto-migration in
+        /// <see cref="Load"/>. Users on the implicit Railway URL get
+        /// silently rewritten to <see cref="DefaultServerUrl"/> the
+        /// next time their config is loaded.
+        /// </summary>
+        internal const string LegacyDefaultServerUrl = "https://eq2lexicon.up.railway.app";
+
         /// <summary>Base URL of the EQ2 Lexicon site (no trailing slash).</summary>
-        public string ServerUrl { get; set; } = "https://eq2lexicon.up.railway.app";
+        public string ServerUrl { get; set; } = DefaultServerUrl;
 
         /// <summary>
         /// API token from /settings/tokens. Treat as a password. The
@@ -128,6 +145,20 @@ namespace EQ2Lexicon.ACTPlugin
                     // The on-disk ApiToken is either DPAPI-encrypted (new) or
                     // legacy plaintext (pre-v0.1.5). DecryptToken handles both.
                     loaded.ApiToken = DecryptToken(loaded.ApiToken);
+                    // One-shot migration: users on the v0.1.10-and-earlier
+                    // implicit Railway URL get silently rewritten to the
+                    // owned domain. The next Save persists it. We rewrite
+                    // ONLY the literal legacy default — if a user has
+                    // explicitly typed the Railway URL into the settings
+                    // panel they get the same migration, which is fine
+                    // (the new URL is just better for them too).
+                    if (string.Equals(
+                            (loaded.ServerUrl ?? "").TrimEnd('/'),
+                            LegacyDefaultServerUrl,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        loaded.ServerUrl = DefaultServerUrl;
+                    }
                     return loaded;
                 }
             }

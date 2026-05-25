@@ -5,11 +5,11 @@
 [![Latest release](https://img.shields.io/github/v/release/VortexUK/EQ2LexiconACTPlugin)](https://github.com/VortexUK/EQ2LexiconACTPlugin/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An [Advanced Combat Tracker](https://advancedcombattracker.com) plugin that uploads parsed EverQuest 2 encounters to the [EQ2 Lexicon](https://eq2lexicon.up.railway.app) website automatically after each fight ends.
+An [Advanced Combat Tracker](https://advancedcombattracker.com) plugin that uploads parsed EverQuest 2 encounters to the [EQ2 Lexicon](https://eq2lexicon.com) website automatically after each fight ends.
 
 ## Install (end users)
 
-1. Sign in at <https://eq2lexicon.up.railway.app> and mint an API token at `/settings/tokens`.
+1. Sign in at <https://eq2lexicon.com> and mint an API token at `/settings/tokens`.
 2. Download `EQ2Lexicon.ACTPlugin.dll` from the [latest release](https://github.com/VortexUK/EQ2LexiconACTPlugin/releases/latest).
 3. Drop the DLL into `%APPDATA%\Advanced Combat Tracker\Plugins\`.
 4. In ACT: **Options → Plugins → Browse**, pick the DLL, then **Add/Enable Plugin**.
