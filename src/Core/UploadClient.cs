@@ -116,7 +116,7 @@ namespace EQ2Lexicon.ACTPlugin
                 {
                     using (var resp = await _http.SendAsync(req).ConfigureAwait(false))
                     {
-                        var body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                        var body = await ReadBodyUtf8Async(resp.Content).ConfigureAwait(false);
                         if (!resp.IsSuccessStatusCode)
                         {
                             return new Result
@@ -212,7 +212,7 @@ namespace EQ2Lexicon.ACTPlugin
                 {
                     using (var resp = await _http.SendAsync(req).ConfigureAwait(false))
                     {
-                        var body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                        var body = await ReadBodyUtf8Async(resp.Content).ConfigureAwait(false);
                         if (!resp.IsSuccessStatusCode)
                         {
                             // Pull a friendly error out of FastAPI's {"detail": "..."} shape if present.
@@ -258,6 +258,13 @@ namespace EQ2Lexicon.ACTPlugin
         // -------------------------------------------------------------------
         // Tiny JSON string-field extractor — avoids pulling in a full JSON
         // parser just for one field. NOT a general-purpose JSON parser.
+        //
+        // Handles all the escape sequences defined in RFC 8259 § 7:
+        //   \" \\ \/ \b \f \n \r \t \uXXXX
+        // The \uXXXX path is the one that matters for non-ASCII Discord
+        // names if a server is ever configured with ensure_ascii=True —
+        // without it, "discord_name": "你好" came out as the
+        // literal text "u4f60u597d" in the test-connection label.
         // -------------------------------------------------------------------
 
         internal static string? ExtractJsonString(string json, string fieldName)
@@ -276,16 +283,84 @@ namespace EQ2Lexicon.ACTPlugin
             for (int i = start; i < json.Length; i++)
             {
                 char ch = json[i];
-                if (ch == '\\' && i + 1 < json.Length)
+                if (ch == '"') return sb.ToString();
+                if (ch != '\\')
                 {
-                    sb.Append(json[i + 1]);
-                    i++;
+                    sb.Append(ch);
                     continue;
                 }
-                if (ch == '"') return sb.ToString();
-                sb.Append(ch);
+                // Escape sequence — need at least one more char.
+                if (i + 1 >= json.Length) return null;
+                char esc = json[i + 1];
+                switch (esc)
+                {
+                    case '"': sb.Append('"'); i++; break;
+                    case '\\': sb.Append('\\'); i++; break;
+                    case '/': sb.Append('/'); i++; break;
+                    case 'b': sb.Append('\b'); i++; break;
+                    case 'f': sb.Append('\f'); i++; break;
+                    case 'n': sb.Append('\n'); i++; break;
+                    case 'r': sb.Append('\r'); i++; break;
+                    case 't': sb.Append('\t'); i++; break;
+                    case 'u':
+                        // \uXXXX — 4 hex digits → 1 char. Surrogate
+                        // pairs (e.g. emoji) come as two \uXXXX in
+                        // sequence; we just emit each char, and
+                        // System.String stores them correctly as a
+                        // UTF-16 surrogate pair.
+                        //
+                        // Validate each char is a real hex digit before
+                        // TryParse — NumberStyles.HexNumber tolerates
+                        // leading/trailing whitespace which would make
+                        // "\u4f6 bar" silently parse as U+04F6.
+                        if (i + 5 >= json.Length) return null;
+                        for (int h = i + 2; h < i + 6; h++)
+                        {
+                            char hc = json[h];
+                            if (!((hc >= '0' && hc <= '9')
+                                || (hc >= 'a' && hc <= 'f')
+                                || (hc >= 'A' && hc <= 'F')))
+                            {
+                                return null;
+                            }
+                        }
+                        var hex = json.Substring(i + 2, 4);
+                        if (!ushort.TryParse(hex, System.Globalization.NumberStyles.HexNumber,
+                                System.Globalization.CultureInfo.InvariantCulture, out var code))
+                        {
+                            return null;
+                        }
+                        sb.Append((char)code);
+                        i += 5;
+                        break;
+                    default:
+                        // Unknown escape — preserve the backslash so the
+                        // user at least sees something they can report.
+                        sb.Append('\\');
+                        sb.Append(esc);
+                        i++;
+                        break;
+                }
             }
             return null;
+        }
+
+        // -------------------------------------------------------------------
+        // .NET Framework's HttpContent.ReadAsStringAsync has a long-standing
+        // charset-fallback issue when Content-Type lacks a charset directive.
+        // FastAPI's JSONResponse intentionally omits the charset (the body
+        // is always UTF-8 per RFC 8259), which hits the fallback path on
+        // 4.8 and can mis-decode non-ASCII names. Read bytes + decode
+        // explicitly as UTF-8 — same result on every framework version.
+        //   https://github.com/dotnet/runtime/issues/28658
+        // -------------------------------------------------------------------
+
+        internal static async Task<string> ReadBodyUtf8Async(HttpContent content)
+        {
+            if (content == null) return "";
+            var bytes = await content.ReadAsByteArrayAsync().ConfigureAwait(false);
+            if (bytes == null || bytes.Length == 0) return "";
+            return Encoding.UTF8.GetString(bytes);
         }
 
         internal static string Truncate(string s, int max)

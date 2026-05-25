@@ -122,6 +122,74 @@ namespace EQ2Lexicon.ACTPlugin.Tests
             Assert.Equal("He said \"hi\" loudly", got);
         }
 
+        // ── JSON escape sequences (RFC 8259 § 7) ───────────────────────────
+        // FastAPI's JSONResponse emits raw UTF-8 (ensure_ascii=False) so
+        // \uXXXX escapes don't show up in practice today, but any other
+        // JSON producer (or a config change) would emit them — and the
+        // pre-v0.1.9 extractor turned "你" into the literal text
+        // "u4f60", which is how the non-ASCII Discord name rendered as
+        // boxes in the test-connection label. Pin every escape RFC 8259
+        // defines so a regression here can't slip through silently.
+
+        [Fact]
+        public void ExtractJsonString_HandlesAllStandardEscapes()
+        {
+            // \\ \/ \b \f \n \r \t — order matches the RFC table.
+            var body = "{\"detail\":\"a\\\\b\\/c\\bd\\fe\\nf\\rg\\th\"}";
+            Assert.Equal("a\\b/c\bd\fe\nf\rg\th", UploadClient.ExtractJsonString(body, "detail"));
+        }
+
+        [Fact]
+        public void ExtractJsonString_HandlesUnicodeEscapes()
+        {
+            // 你好 = 你好 (CJK "hello"). Pre-fix this came out as
+            // the literal text "u4f60u597d" and rendered as boxes in the
+            // label. Mojibake-shaped bug we'd have shipped to every
+            // non-ASCII Discord username if we hadn't caught it.
+            var body = "{\"discord_name\":\"\\u4f60\\u597d\"}";
+            Assert.Equal("你好", UploadClient.ExtractJsonString(body, "discord_name"));
+        }
+
+        [Fact]
+        public void ExtractJsonString_HandlesEmojiSurrogatePair()
+        {
+            // Emoji outside the BMP are emitted as a UTF-16 surrogate
+            // pair of \uXXXX escapes. 😀 (U+1F600) = D83D + DE00.
+            // System.String stores the two chars as a valid surrogate
+            // pair so concatenation just works.
+            var body = "{\"discord_name\":\"\\uD83D\\uDE00\"}";
+            Assert.Equal("😀", UploadClient.ExtractJsonString(body, "discord_name"));
+        }
+
+        [Fact]
+        public void ExtractJsonString_HandlesMixedAsciiAndEscapes()
+        {
+            // The real-world shape: a name that's mostly ASCII but
+            // contains a single accented char that the server escaped.
+            var body = "{\"discord_name\":\"caf\\u00e9\"}";
+            Assert.Equal("café", UploadClient.ExtractJsonString(body, "discord_name"));
+        }
+
+        [Fact]
+        public void ExtractJsonString_MalformedUnicodeEscapeReturnsNull()
+        {
+            // \u followed by anything that isn't 4 hex digits is a
+            // protocol error — bail rather than guess.
+            var body = "{\"detail\":\"foo \\u4f6 bar\"}";  // only 3 hex digits
+            Assert.Null(UploadClient.ExtractJsonString(body, "detail"));
+        }
+
+        [Fact]
+        public void ExtractJsonString_HandlesRawUtf8FromFastApi()
+        {
+            // The default FastAPI path: bytes-on-the-wire are raw UTF-8,
+            // ReadBodyUtf8Async produces a string with the actual
+            // characters (not escapes). Extractor passes them through
+            // unchanged — this is the happy path that the field today.
+            var body = "{\"discord_name\":\"你好\"}";
+            Assert.Equal("你好", UploadClient.ExtractJsonString(body, "discord_name"));
+        }
+
         [Fact]
         public void ExtractJsonString_MissingFieldReturnsNull()
         {

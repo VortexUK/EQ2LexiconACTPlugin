@@ -230,6 +230,7 @@ namespace EQ2Lexicon.ACTPlugin
                 Text = "",
                 MaximumSize = new Size(InputWidth - 240, 0),
             };
+            EnableUnicodeFontFallback(_testStatusLabel);
             cfgButtons.Controls.Add(_testStatusLabel);
             cfgCard.Controls.Add(cfgButtons);
 
@@ -246,6 +247,7 @@ namespace EQ2Lexicon.ACTPlugin
                 Margin = new Padding(0, 0, 0, 10),
                 Text = "",
             };
+            EnableUnicodeFontFallback(_currentCharLabel);
             logCard.Controls.Add(_currentCharLabel);
 
             logCard.Controls.Add(MakeFieldLabel("Don't upload as"));
@@ -280,6 +282,7 @@ namespace EQ2Lexicon.ACTPlugin
                 BackColor = T.Card,
                 Margin = new Padding(0, 0, 0, 10),
             };
+            EnableUnicodeFontFallback(_captureLabel);
             capCard.Controls.Add(_captureLabel);
 
             var capButtons = new FlowLayoutPanel
@@ -306,6 +309,7 @@ namespace EQ2Lexicon.ACTPlugin
                 BackColor = T.Card,
                 Text = "",
             };
+            EnableUnicodeFontFallback(_uploadStatusLabel);
             capCard.Controls.Add(_uploadStatusLabel);
 
             Controls.Add(stack);
@@ -573,6 +577,25 @@ namespace EQ2Lexicon.ACTPlugin
                 _currentCharLabel.Text = $"Currently logging as: {currentChar}";
                 _currentCharLabel.ForeColor = T.Text;
             }
+        }
+
+        /// <summary>
+        /// Force the label to render via GDI (TextRenderer / Uniscribe)
+        /// instead of GDI+ (Graphics.DrawString). GDI does proper Unicode
+        /// font fallback through Uniscribe — when a glyph isn't in the
+        /// declared font (Segoe UI), Windows automatically substitutes
+        /// from Microsoft YaHei (CJK), Segoe UI Symbol, Segoe UI Emoji,
+        /// etc. GDI+ doesn't fall back and renders missing glyphs as
+        /// tofu boxes (□). Apply to any label that displays user-supplied
+        /// strings (Discord names, encounter titles, character names).
+        ///
+        /// Application.SetCompatibleTextRenderingDefault is the
+        /// process-wide knob but ACT owns that — we can only set this
+        /// per-label.
+        /// </summary>
+        private static void EnableUnicodeFontFallback(Label label)
+        {
+            label.UseCompatibleTextRendering = false;
         }
 
         // ──────────────────────────────────────────────────────────────────
