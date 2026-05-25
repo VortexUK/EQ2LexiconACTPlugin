@@ -18,7 +18,7 @@
       Build metadata is mirrored from the UI csproj so this assembly's
       version tracks the user-facing plugin version.
     -->
-    <Version>0.1.7</Version>
+    <Version>0.1.8</Version>
     <Company>EQ2 Lexicon</Company>
     <Product>EQ2 Lexicon Uploader (Core)</Product>
     <Description>Pure payload / config / HTTP layer shared by EQ2Lexicon.ACTPlugin.</Description>

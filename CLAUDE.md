@@ -30,7 +30,9 @@ The split also unlocks GitHub Actions CI: the workflow at `.github/workflows/ci.
 | `src/Core/PayloadBuilder.cs` | Pure transform: `EncounterSnapshot` → ingest-JSON dict shape. Owns `OutgoingGroupToSwingType`, `FormatTime` (emits ISO-8601 + Z), `SanitizePayload` (replaces NaN/∞ with 0), and `SerializeJson` (JavaScriptSerializer with an 8 MB ceiling). |
 | `src/Core/Snapshots.cs` | Plain DTOs (`EncounterSnapshot`, `CombatantSnapshot`, `DamageTypeAggregate`, `AttackTypeSnapshot`) that mirror the slice of ACT's data model the payload builder reads. |
 | `src/Core/PluginConfig.cs` | User settings persisted as XML. `Load(path)` and `Save(path)` take the path from the caller (resolved in `Plugin.cs` via `ActHelpers.GetConfigPath()`). API token is DPAPI-encrypted on disk (current-user scope) with a `DPAPI:` prefix; legacy plaintext from v0.1.0–v0.1.4 still loads. |
-| `src/Core/UploadClient.cs` | `HttpClient` wrapper. `TestConnectionAsync` (GET `/api/auth/whoami`), `UploadEncounterAsync` (POST `/api/parses/ingest`). `ValidateServerUrl` rejects non-https except `localhost`/`127.0.0.1`/`[::1]`. |
+| `src/Core/UploadClient.cs` | `HttpClient` wrapper. `TestConnectionAsync` (GET `/api/auth/whoami`), `UploadEncounterAsync` (POST `/api/parses/ingest`). `ValidateServerUrl` rejects non-https except `localhost`/`127.0.0.1`/`[::1]`. Adds `X-Lexicon-Signature` HMAC header to every upload (see PayloadSigner) and blocks uploads when `UpdateStatus.UploadBlocked == true`. |
+| `src/Core/UpdateChecker.cs` | GitHub-releases-feed fetcher + pure version-comparison logic. `Compute(currentVersion, releasedVersions)` returns an `UpdateCheckResult` with `Current`/`SlightlyStale`/`TooOld`/`DevBuild`/`Unknown`. Threshold = `StaleThresholdVersions` (2) — older than that blocks uploads. Failure modes (network down, GH 5xx, rate-limit) all collapse to `Unknown` so the gate fails OPEN. |
+| `src/Core/PayloadSigner.cs` | HMAC-SHA256 of the upload body keyed by the user's API token. See "Payload integrity" below for the threat model and what this does/doesn't defend. |
 | `tests/EQ2Lexicon.ACTPlugin.Tests/` | xUnit project, `net48`. 72 tests. References Core only (UI types aren't testable without ACT). Covers PayloadBuilder, PluginConfig (incl. DPAPI roundtrip), UploadClient (incl. URL validator). Coverage collected via `coverlet.collector`. |
 
 ## Versioning + releases
@@ -105,6 +107,38 @@ Dependabot (`.github/dependabot.yml`) opens weekly PRs for NuGet packages in the
 - The site's response is parsed by a hand-rolled `ExtractJsonString` (not a full JSON parser). It's bounded by the response body size and only extracts the single `detail` / `status` / `discord_name` string fields — no nested-structure trust.
 
 See the audit findings + fixes in commits `9eb39e0` (v0.1.4) and `5f9e11a` (v0.1.5).
+
+## Payload integrity (HMAC, v0.1.8+)
+
+Every upload includes an `X-Lexicon-Signature` header: HMAC-SHA256 of the request body, keyed by the user's API token. Implementation in `src/Core/PayloadSigner.cs`. The server in the [EQ2Lexicon](https://github.com/VortexUK/EQ2Lexicon) repo re-computes the HMAC from the body + the token the Bearer header resolved to, and compares with constant-time equality.
+
+**What this defends**:
+
+- Casual payload tampering by a user editing JSON in a debugging proxy and replaying.
+- An attacker who somehow MITMs a TLS session and tries to mutate the body in flight.
+- An attacker who steals only the token (e.g. via a hypothetical XSS on the site) still needs to know the HMAC scheme to forge a valid request — small but non-zero friction.
+
+**What this does NOT defend**:
+
+- The legitimate holder of an API token can sign anything — they have the key. Forging a fake parse for *yourself* is unfixable client-side. Real integrity has to come from server-side sanity checks (DPS-vs-level caps, encounter duration plausibility, cross-validation between multiple plugin uploads of the same encounter).
+- A determined user who runs the DLL through `dnSpy`/`ILSpy` can read the signing code; the algorithm is intentionally not a secret.
+
+**Why key = API token, not an embedded shared secret**: no new secret to manage / rotate / leak. The token is already in memory. We get a per-user key as a side effect, which means cross-user replay also doesn't work.
+
+**Rollout coordination with the server**: ship the server's signature validator in *opportunistic* mode first (validate only if header present, reject only if validation fails) so existing v0.1.7 installs keep uploading. Flip to *strict* mode (require the header) once telemetry shows ≥98% of uploads carry it — pulled from the `User-Agent` header which UploadClient sets to `EQ2LexiconACTPlugin/<assembly version>`.
+
+## Update awareness (v0.1.8+)
+
+The plugin fetches `https://api.github.com/repos/VortexUK/EQ2LexiconACTPlugin/releases` once per ACT session, compares the assembly version to the published tags, and:
+
+- Shows a green/yellow/red banner above the Configuration card in SettingsPanel (`SetUpdateStatus`).
+- Blocks uploads when the installed version is more than `UpdateChecker.StaleThresholdVersions` (=2) releases behind. Block lives in `UploadClient.UploadEncounterAsync` — see `UpdateStatus.UploadBlocked`.
+
+Failure modes (offline, GitHub 5xx, rate-limit, malformed JSON) all collapse to `UpdateStatus.Unknown`, which intentionally **fails open** — uploads still proceed. A GitHub incident must not silently brick every user's parse upload.
+
+`Compute()` returns `DevBuild` when the local version is strictly greater than the latest published tag (i.e. you bumped `<Version>` but haven't tagged yet) — UI shows a muted "dev build" label so maintainers don't get nagged about their own un-released version.
+
+No caching of the GitHub response — request volume is at most a handful per user per day, well under the unauthenticated 60/h/IP limit, and re-fetching on every ACT start means a user who just installed an update sees the banner clear instantly after restarting ACT.
 
 ## ACT API gotchas worth remembering
 

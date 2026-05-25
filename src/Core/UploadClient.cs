@@ -15,13 +15,27 @@ namespace EQ2Lexicon.ACTPlugin
     {
         private readonly HttpClient _http;
 
+        /// <summary>
+        /// Plugin assigns this after the first update check completes.
+        /// When <see cref="UpdateCheckResult.UploadBlocked"/> is true,
+        /// <see cref="UploadEncounterAsync"/> short-circuits with a
+        /// "too old" error before sending. Null means "haven't checked
+        /// yet" — uploads still proceed so a network outage at startup
+        /// doesn't silently block parses.
+        /// </summary>
+        public UpdateCheckResult? UpdateStatus { get; set; }
+
         public UploadClient()
         {
             _http = new HttpClient
             {
                 Timeout = TimeSpan.FromSeconds(20),
             };
-            _http.DefaultRequestHeaders.UserAgent.ParseAdd("EQ2LexiconACTPlugin/0.1.0");
+            // UA includes the assembly version so the server can see what
+            // plugin version each upload came from. Useful for telemetry
+            // and for the eventual server-side strict-version gate.
+            var v = UpdateChecker.GetCurrentAssemblyVersion().ToString(3);
+            _http.DefaultRequestHeaders.UserAgent.ParseAdd($"EQ2LexiconACTPlugin/{v}");
         }
 
         public void Dispose()
@@ -146,6 +160,19 @@ namespace EQ2Lexicon.ACTPlugin
         /// </summary>
         public async Task<Result> UploadEncounterAsync(string serverUrl, string apiToken, string payloadJson)
         {
+            // Gate before we touch the network: if this plugin is too far
+            // behind the latest release, refuse to upload. Surface a
+            // user-actionable message so the settings panel can prompt them
+            // to update. Null UpdateStatus = "not yet checked" — allow.
+            if (UpdateStatus != null && UpdateStatus.UploadBlocked)
+            {
+                return new Result
+                {
+                    Success = false,
+                    Message = $"Plugin v{UpdateStatus.CurrentVersion} is too old (latest v{UpdateStatus.LatestVersion}). Update to continue uploading.",
+                };
+            }
+
             var urlError = ValidateServerUrl(serverUrl);
             if (urlError != null) return new Result { Message = urlError };
             if (string.IsNullOrWhiteSpace(apiToken))
@@ -164,6 +191,22 @@ namespace EQ2Lexicon.ACTPlugin
             {
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiToken);
                 req.Content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
+
+                // HMAC the body with the API token as the key. The server
+                // recomputes and rejects if it doesn't match — see
+                // PayloadSigner for the threat-model caveats.
+                try
+                {
+                    var signature = PayloadSigner.Sign(payloadJson, apiToken);
+                    req.Headers.Add(PayloadSigner.SignatureHeaderName, signature);
+                }
+                catch (ArgumentException)
+                {
+                    // Defensive: apiToken was validated above so this
+                    // shouldn't fire. If it ever does, fail closed rather
+                    // than send an unsigned body.
+                    return new Result { Message = "Could not sign payload (token missing)." };
+                }
 
                 try
                 {

@@ -70,6 +70,16 @@ namespace EQ2Lexicon.ACTPlugin
         private readonly Label _headerStatusGlyph;
         private readonly Label _headerStatusText;
 
+        // Version banner — null until SetUpdateStatus marshals a result
+        // back from the GitHub check that Plugin fires on init. We add
+        // the controls upfront (hidden) and toggle visibility/colour so
+        // the layout doesn't reflow when the check completes.
+        private readonly FlowLayoutPanel _versionCard;
+        private readonly Label _versionGlyph;
+        private readonly Label _versionText;
+        private readonly Button _versionDownloadBtn;
+        private string _latestReleaseUrl = "";
+
         // Updated by the Plugin when a new encounter is captured. Held as a
         // delegate so we don't take a hard reference on EncounterCapture from
         // the UI layer.
@@ -101,6 +111,73 @@ namespace EQ2Lexicon.ACTPlugin
 
             // ── Header ─────────────────────────────────────────────────────
             stack.Controls.Add(MakeHeader(out _headerStatusGlyph, out _headerStatusText));
+
+            // ── Version banner ─────────────────────────────────────────────
+            // Built collapsed (Visible=false). Plugin's update check
+            // populates it via SetUpdateStatus once the GitHub fetch
+            // returns. Sized like a card but presented inline above
+            // CONFIGURATION because it's a status, not a settings group.
+            _versionCard = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = T.Card,
+                Padding = new Padding(CardPad, 10, CardPad, 10),
+                Margin = new Padding(0, 0, 0, 12),
+                MinimumSize = new Size(CardWidth, 0),
+                MaximumSize = new Size(CardWidth, 99999),
+                Visible = false,
+            };
+            _versionCard.Paint += (s, e) =>
+            {
+                using (var pen = new Pen(T.CardBorder, 1))
+                {
+                    var r = _versionCard.ClientRectangle;
+                    e.Graphics.DrawRectangle(pen, 0, 0, r.Width - 1, r.Height - 1);
+                }
+            };
+            _versionGlyph = new Label
+            {
+                Text = "●",
+                Font = new Font("Segoe UI", 11f),
+                ForeColor = T.TextMuted,
+                AutoSize = true,
+                BackColor = T.Card,
+                Margin = new Padding(0, 4, 8, 0),
+            };
+            _versionText = new Label
+            {
+                Text = "",
+                Font = new Font("Segoe UI", 9f),
+                ForeColor = T.Text,
+                AutoSize = true,
+                BackColor = T.Card,
+                MaximumSize = new Size(CardWidth - 200, 0),
+                Margin = new Padding(0, 6, 12, 0),
+            };
+            _versionDownloadBtn = MakeButton("Download update", primary: true);
+            _versionDownloadBtn.Margin = new Padding(0, 0, 0, 0);
+            _versionDownloadBtn.Visible = false;
+            _versionDownloadBtn.Click += (s, e) =>
+            {
+                if (string.IsNullOrEmpty(_latestReleaseUrl)) return;
+                try
+                {
+                    System.Diagnostics.Process.Start(_latestReleaseUrl);
+                }
+                catch
+                {
+                    // .NET Framework's Process.Start swallows shell errors
+                    // sometimes. The URL is in the banner text too, so the
+                    // user can copy it if the click no-ops.
+                }
+            };
+            _versionCard.Controls.Add(_versionGlyph);
+            _versionCard.Controls.Add(_versionText);
+            _versionCard.Controls.Add(_versionDownloadBtn);
+            stack.Controls.Add(_versionCard);
 
             // ── Card: Configuration ────────────────────────────────────────
             var cfgCard = MakeCard("⚙ CONFIGURATION");
@@ -262,6 +339,64 @@ namespace EQ2Lexicon.ACTPlugin
             // New capture: clear any stale upload status until the upload
             // attempt (or skip reason) reports back.
             _uploadStatusLabel.Text = "";
+        }
+
+        /// <summary>
+        /// Surface the result of the version-check that Plugin fires on
+        /// init. Drives the banner above the Configuration card:
+        /// - Current      → muted small "v0.1.8 — up to date" (rarely shown)
+        /// - SlightlyStale → yellow banner + Download button
+        /// - TooOld       → red banner "uploads blocked" + Download button
+        /// - DevBuild     → muted "v0.1.9-dev" line (no nag for maintainers)
+        /// - Unknown      → banner stays hidden (failed-open)
+        /// Marshals to the UI thread because Plugin invokes it from the
+        /// background update-check Task.
+        /// </summary>
+        public void SetUpdateStatus(UpdateCheckResult result)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke((Action)(() => SetUpdateStatus(result)));
+                return;
+            }
+            if (result == null || result.Status == UpdateStatus.Unknown)
+            {
+                _versionCard.Visible = false;
+                return;
+            }
+
+            _latestReleaseUrl = result.LatestReleaseUrl;
+            switch (result.Status)
+            {
+                case UpdateStatus.Current:
+                    _versionGlyph.ForeColor = T.Success;
+                    _versionText.ForeColor = T.TextMuted;
+                    _versionText.Text = $"v{result.CurrentVersion} — up to date";
+                    _versionDownloadBtn.Visible = false;
+                    break;
+                case UpdateStatus.SlightlyStale:
+                    _versionGlyph.ForeColor = T.Warning;
+                    _versionText.ForeColor = T.Text;
+                    _versionText.Text =
+                        $"Update available: you're on v{result.CurrentVersion}, latest is v{result.LatestVersion}.";
+                    _versionDownloadBtn.Visible = true;
+                    break;
+                case UpdateStatus.TooOld:
+                    _versionGlyph.ForeColor = T.Danger;
+                    _versionText.ForeColor = T.Danger;
+                    _versionText.Text =
+                        $"v{result.CurrentVersion} is too old (latest v{result.LatestVersion}). " +
+                        "Uploads are blocked until you update.";
+                    _versionDownloadBtn.Visible = true;
+                    break;
+                case UpdateStatus.DevBuild:
+                    _versionGlyph.ForeColor = T.TextMuted;
+                    _versionText.ForeColor = T.TextMuted;
+                    _versionText.Text = $"v{result.CurrentVersion} (dev build)";
+                    _versionDownloadBtn.Visible = false;
+                    break;
+            }
+            _versionCard.Visible = true;
         }
 
         /// <summary>

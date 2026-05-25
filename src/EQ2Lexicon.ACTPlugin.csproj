@@ -22,7 +22,7 @@
     <ActInstallDir Condition="'$(ActInstallDir)' == ''">C:\Program Files (x86)\Advanced Combat Tracker</ActInstallDir>
 
     <!-- Build metadata shown in ACT's plugin list -->
-    <Version>0.1.7</Version>
+    <Version>0.1.8</Version>
     <Company>EQ2 Lexicon</Company>
     <Product>EQ2 Lexicon Uploader</Product>
     <Description>Uploads ACT-parsed encounters to the EQ2 Lexicon site.</Description>
@@ -83,6 +83,8 @@
       <Private>False</Private>
     </Reference>
     <Reference Include="System.Windows.Forms" />
+    <!-- HttpClient for the GitHub-releases update check fired on plugin init. -->
+    <Reference Include="System.Net.Http" />
   </ItemGroup>
 
   <!--

@@ -1,4 +1,5 @@
 using System;
+using System.Net.Http;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Advanced_Combat_Tracker;
@@ -55,6 +56,40 @@ namespace EQ2Lexicon.ACTPlugin
             _capture.OnCaptured += OnEncounterCaptured;
 
             UpdateStatusFromConfig();
+
+            // Fire-and-forget update check. Fails open: any error
+            // (offline, GitHub 5xx, rate-limit) leaves UpdateStatus null,
+            // which UploadClient interprets as "don't gate".
+            _ = Task.Run(CheckForUpdatesAsync);
+        }
+
+        /// <summary>
+        /// Fetch the GitHub release list, compute where we sit, and
+        /// publish the result to the SettingsPanel + UploadClient. Runs
+        /// once per ACT session — no caching needed because every
+        /// startup is fresh and the request budget is generous.
+        /// </summary>
+        private async Task CheckForUpdatesAsync()
+        {
+            if (_uploadClient == null || _settingsPanel == null) return;
+            try
+            {
+                var version = UpdateChecker.GetCurrentAssemblyVersion();
+                using (var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) })
+                {
+                    var fetcher = new GitHubReleaseFetcher(http, $"EQ2LexiconACTPlugin/{version}");
+                    var result = await UpdateChecker.CheckAsync(version, fetcher).ConfigureAwait(false);
+                    _uploadClient.UpdateStatus = result;
+                    _settingsPanel.SetUpdateStatus(result);
+                }
+            }
+            catch
+            {
+                // CheckAsync swallows its own exceptions and returns
+                // Unknown — this catch is a belt-and-brace against the
+                // HttpClient ctor or any reflection lookup throwing
+                // before we get into the checker.
+            }
         }
 
         public void DeInitPlugin()
