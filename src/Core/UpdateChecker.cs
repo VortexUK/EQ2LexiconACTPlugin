@@ -211,25 +211,33 @@ namespace EQ2Lexicon.ACTPlugin
 
         private static (string Url, string Sha256Hex) FindDllAsset(string releaseBlock)
         {
-            // Walk every `"name"` field in the block; for each one ending
-            // ".dll", pluck the adjacent `browser_download_url` and
-            // `digest`. GitHub orders the JSON keys consistently inside
-            // each asset object so the adjacent search is stable, but we
-            // search both directions defensively.
+            // Scope the search to the `"assets":[ ... ]` array so we
+            // don't accidentally pick up `"author":{"name":"foo.dll"}`
+            // or `"uploader":{"name":"x.dll"}` — both legal GitHub
+            // username/display-name shapes that would otherwise hijack
+            // the DLL-name match. See the v0.1.13 audit M1 finding.
+            var assetsBlock = ExtractAssetsArray(releaseBlock);
+            if (assetsBlock.Length == 0) return ("", "");
+
+            // Walk every `"name"` field in the assets array; for each
+            // one ending ".dll", pluck the adjacent
+            // browser_download_url + digest. GitHub orders the JSON
+            // keys consistently inside each asset object so the
+            // adjacent search is stable.
             int idx = 0;
-            while (idx < releaseBlock.Length)
+            while (idx < assetsBlock.Length)
             {
-                int nameAt = releaseBlock.IndexOf("\"name\"", idx, StringComparison.Ordinal);
+                int nameAt = assetsBlock.IndexOf("\"name\"", idx, StringComparison.Ordinal);
                 if (nameAt < 0) return ("", "");
-                var nameVal = UploadClient.ExtractJsonString(releaseBlock.Substring(nameAt), "name") ?? "";
+                var nameVal = UploadClient.ExtractJsonString(assetsBlock.Substring(nameAt), "name") ?? "";
                 idx = nameAt + "\"name\"".Length;
 
                 if (!nameVal.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)) continue;
 
                 // Found a DLL asset. The browser_download_url + digest
                 // for THIS asset are within the next ~1KB of JSON.
-                int probeEnd = Math.Min(releaseBlock.Length, idx + 1500);
-                var probe = releaseBlock.Substring(idx, probeEnd - idx);
+                int probeEnd = Math.Min(assetsBlock.Length, idx + 1500);
+                var probe = assetsBlock.Substring(idx, probeEnd - idx);
                 var url = UploadClient.ExtractJsonString(probe, "browser_download_url") ?? "";
                 var digest = UploadClient.ExtractJsonString(probe, "digest") ?? "";
 
@@ -242,6 +250,51 @@ namespace EQ2Lexicon.ACTPlugin
                 return (url, sha);
             }
             return ("", "");
+        }
+
+        /// <summary>
+        /// Locate the `"assets":[ ... ]` array within a single release
+        /// object and return its content (between `[` and the matching
+        /// `]`). Uses bracket-counting so nested objects inside an
+        /// asset don't trip the matcher. Returns "" if no assets array
+        /// is found or the bracket structure is malformed.
+        /// </summary>
+        private static string ExtractAssetsArray(string releaseBlock)
+        {
+            if (string.IsNullOrEmpty(releaseBlock)) return "";
+            int assetsAt = releaseBlock.IndexOf("\"assets\"", StringComparison.Ordinal);
+            if (assetsAt < 0) return "";
+            int colon = releaseBlock.IndexOf(':', assetsAt);
+            if (colon < 0) return "";
+            // Skip whitespace to find the `[`.
+            int i = colon + 1;
+            while (i < releaseBlock.Length && char.IsWhiteSpace(releaseBlock[i])) i++;
+            if (i >= releaseBlock.Length || releaseBlock[i] != '[') return "";
+            int arrayStart = i + 1;
+
+            // Bracket-count to find the matching `]`. Must respect
+            // strings (so a `]` inside a release-note URL doesn't
+            // close the array prematurely) and escapes inside them.
+            int depth = 1;
+            bool inString = false;
+            for (int j = arrayStart; j < releaseBlock.Length; j++)
+            {
+                char c = releaseBlock[j];
+                if (inString)
+                {
+                    if (c == '\\' && j + 1 < releaseBlock.Length) { j++; continue; }
+                    if (c == '"') inString = false;
+                    continue;
+                }
+                if (c == '"') { inString = true; continue; }
+                if (c == '[') depth++;
+                else if (c == ']')
+                {
+                    depth--;
+                    if (depth == 0) return releaseBlock.Substring(arrayStart, j - arrayStart);
+                }
+            }
+            return ""; // malformed — unclosed array
         }
 
         /// <summary>

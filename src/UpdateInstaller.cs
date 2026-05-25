@@ -129,21 +129,52 @@ namespace EQ2Lexicon.ACTPlugin
         /// process to exit, then atomic-renames the .new file. Returns
         /// false on any failure to start the process — caller falls
         /// back to telling the user to swap manually.
+        ///
+        /// ── PowerShell quoting and path-handling caveats ──────────────────
+        ///
+        ///   * The paths are single-quoted in the script — that's the
+        ///     ONLY quoting style that doesn't expand $vars / backticks /
+        ///     etc. Within '...' the only escape required is the
+        ///     apostrophe itself, encoded as ''. We pre-escape via
+        ///     EscapePowerShellSingleQuoted so users whose Windows
+        ///     username contains an apostrophe (O'Brien, D'Souza,
+        ///     N'Diaye — all legal on NTFS and in Windows account names)
+        ///     don't get a broken swap script that silently fails to
+        ///     close its `if` block.
+        ///
+        ///   * We use -LiteralPath everywhere instead of plain positional
+        ///     args. Test-Path / Move-Item run their input through
+        ///     wildcard expansion by default, so a path containing
+        ///     `[`, `]`, or `*` (also legal in Windows filenames) would
+        ///     either match the wrong file or no file at all.
+        ///
+        ///   * The Move-Item is wrapped in a retry loop. The expected
+        ///     failure mode it handles: the user has TWO ACT instances
+        ///     running and both stage updates. When instance A exits,
+        ///     the target .dll is still locked by instance B; without
+        ///     the retry the swap fails and the .new file disappears
+        ///     before instance B closes. With the retry, helper A
+        ///     waits up to ~20s for instance B to release the lock.
         /// </summary>
         private static bool TrySpawnSwapHelper(string newPath, string targetPath)
         {
             try
             {
-                var actPid = Process.GetCurrentProcess().Id;
-                // PowerShell escapes: single-quote strings around the
-                // paths so any spaces in %APPDATA% (Windows usernames
-                // can contain spaces) don't break the command line. The
-                // paths can't contain single quotes themselves
-                // without escaping, but %APPDATA% paths never do.
+                var actPid = Process.GetCurrentProcess()
+                    .Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var newQuoted = EscapePowerShellSingleQuoted(newPath);
+                var tgtQuoted = EscapePowerShellSingleQuoted(targetPath);
+
+                // The retry loop handles the multi-ACT case: target .dll
+                // is locked while another instance is still alive.
                 var script =
                     $"Wait-Process -Id {actPid} -ErrorAction SilentlyContinue; " +
-                    $"if (Test-Path '{newPath}') {{ " +
-                    $"Move-Item -Force '{newPath}' '{targetPath}' -ErrorAction SilentlyContinue " +
+                    $"if (Test-Path -LiteralPath '{newQuoted}') {{ " +
+                    $"$ok = $false; " +
+                    $"for ($i = 0; $i -lt 10 -and -not $ok; $i++) {{ " +
+                    $"try {{ Move-Item -LiteralPath '{newQuoted}' -Destination '{tgtQuoted}' -Force -ErrorAction Stop; $ok = $true }} " +
+                    $"catch {{ Start-Sleep -Seconds 2 }} " +
+                    $"}} " +
                     $"}}";
 
                 var psi = new ProcessStartInfo
@@ -163,6 +194,20 @@ namespace EQ2Lexicon.ACTPlugin
             {
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Double up any single quotes for safe embedding in a
+        /// PowerShell single-quoted string. Within '...' a literal
+        /// apostrophe is the ONLY thing that needs escaping, and the
+        /// escape sequence is '' (two single quotes). Pre-v0.1.13 this
+        /// helper didn't exist and a user with an apostrophe in their
+        /// AppData path (e.g. C:\Users\O'Brien\...) got a malformed
+        /// helper script that silently failed to swap the DLL.
+        /// </summary>
+        internal static string EscapePowerShellSingleQuoted(string s)
+        {
+            return (s ?? "").Replace("'", "''");
         }
 
         private static string BuildReadmeText(string newPath, string targetPath)

@@ -180,6 +180,45 @@ namespace EQ2Lexicon.ACTPlugin.Tests
         }
 
         [Fact]
+        public void ExtractJsonString_RejectsLoneHighSurrogate()
+        {
+            // A high surrogate (\uD800-\uDBFF) is only valid when
+            // immediately followed by a low surrogate. A hostile server
+            // sending the high alone would otherwise produce an
+            // ill-formed UTF-16 string that downstream code
+            // (clipboard, JSON re-serialise) might choke on.
+            var body = "{\"detail\":\"\\uD83Dhello\"}";
+            Assert.Null(UploadClient.ExtractJsonString(body, "detail"));
+        }
+
+        [Fact]
+        public void ExtractJsonString_RejectsLoneLowSurrogate()
+        {
+            // Low surrogates (\uDC00-\uDFFF) MUST be preceded by a
+            // high surrogate. One by itself is a protocol error.
+            var body = "{\"detail\":\"\\uDE00\"}";
+            Assert.Null(UploadClient.ExtractJsonString(body, "detail"));
+        }
+
+        [Fact]
+        public void ExtractJsonString_RejectsHighSurrogateAtEndOfString()
+        {
+            // Truncated emoji at the end of the string — high
+            // surrogate with no following escape sequence at all.
+            var body = "{\"detail\":\"\\uD83D\"}";
+            Assert.Null(UploadClient.ExtractJsonString(body, "detail"));
+        }
+
+        [Fact]
+        public void ExtractJsonString_RejectsHighSurrogateFollowedByNonLow()
+        {
+            // \uD83DA — high followed by a regular ASCII 'A'
+            // (not a low surrogate). Ill-formed; reject.
+            var body = "{\"detail\":\"\\uD83D\\u0041\"}";
+            Assert.Null(UploadClient.ExtractJsonString(body, "detail"));
+        }
+
+        [Fact]
         public void ExtractJsonString_HandlesRawUtf8FromFastApi()
         {
             // The default FastAPI path: bytes-on-the-wire are raw UTF-8,

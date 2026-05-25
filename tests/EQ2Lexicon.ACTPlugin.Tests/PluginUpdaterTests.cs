@@ -141,6 +141,53 @@ namespace EQ2Lexicon.ACTPlugin.Tests
             Assert.Contains("too large", result.Message, StringComparison.OrdinalIgnoreCase);
         }
 
+        // ── ValidateAssetUri (H2 hardening — v0.1.13) ─────────────────────
+        // The audit (v0.1.5 → v0.1.12) flagged that a tampered GitHub JSON
+        // could substitute the asset URL to anywhere on the internet. The
+        // SHA-256 verify is the actual gate against bytes-substitution,
+        // but pinning the URL hardens against information-disclosure (the
+        // plugin's User-Agent gets sent wherever the JSON points) and
+        // against future bugs where the verify could be bypassed.
+
+        [Theory]
+        [InlineData("https://github.com/VortexUK/EQ2LexiconACTPlugin/releases/download/v0.1.12/EQ2Lexicon.ACTPlugin.dll")]
+        [InlineData("https://objects.githubusercontent.com/anything")]
+        [InlineData("https://release-assets.githubusercontent.com/whatever")]
+        public void ValidateAssetUri_AcceptsGitHubHostsOverHttps(string url)
+        {
+            HttpDllAssetFetcher.ValidateAssetUri(new Uri(url));
+        }
+
+        [Theory]
+        [InlineData("http://github.com/foo")]          // scheme downgrade
+        [InlineData("ftp://github.com/foo")]            // non-http(s)
+        [InlineData("https://evil.com/foo")]            // off-domain
+        [InlineData("https://github.com.evil.com/foo")] // domain-suffix smuggling
+        [InlineData("https://notgithub.com/foo")]
+        public void ValidateAssetUri_RejectsHostileOrDowngradedUrls(string url)
+        {
+            Assert.Throws<InvalidOperationException>(() =>
+                HttpDllAssetFetcher.ValidateAssetUri(new Uri(url)));
+        }
+
+        [Fact]
+        public void IsAllowedAssetHost_HandlesEdgeCases()
+        {
+            // Bare apex match
+            Assert.True(HttpDllAssetFetcher.IsAllowedAssetHost("github.com"));
+            Assert.True(HttpDllAssetFetcher.IsAllowedAssetHost("GITHUB.COM"));
+            // Subdomains of githubusercontent.com — GH uses several
+            // for releases (objects., release-assets., etc.)
+            Assert.True(HttpDllAssetFetcher.IsAllowedAssetHost("objects.githubusercontent.com"));
+            Assert.True(HttpDllAssetFetcher.IsAllowedAssetHost("anything.githubusercontent.com"));
+            // Subdomain attack — must not match github.com as a suffix
+            Assert.False(HttpDllAssetFetcher.IsAllowedAssetHost("evil-github.com"));
+            Assert.False(HttpDllAssetFetcher.IsAllowedAssetHost("github.com.evil.com"));
+            // Empty / null
+            Assert.False(HttpDllAssetFetcher.IsAllowedAssetHost(""));
+            Assert.False(HttpDllAssetFetcher.IsAllowedAssetHost(null!));
+        }
+
         [Fact]
         public async Task DownloadAndVerifyAsync_HashCompareIsCaseInsensitive()
         {

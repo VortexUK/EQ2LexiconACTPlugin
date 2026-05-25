@@ -305,33 +305,41 @@ namespace EQ2Lexicon.ACTPlugin
                     case 'u':
                         // \uXXXX — 4 hex digits → 1 char. Surrogate
                         // pairs (e.g. emoji) come as two \uXXXX in
-                        // sequence; we just emit each char, and
-                        // System.String stores them correctly as a
-                        // UTF-16 surrogate pair.
+                        // sequence; we emit each char and System.String
+                        // stores them as a valid UTF-16 surrogate pair.
                         //
                         // Validate each char is a real hex digit before
                         // TryParse — NumberStyles.HexNumber tolerates
                         // leading/trailing whitespace which would make
                         // "\u4f6 bar" silently parse as U+04F6.
-                        if (i + 5 >= json.Length) return null;
-                        for (int h = i + 2; h < i + 6; h++)
+                        //
+                        // Reject lone surrogates explicitly. A hostile
+                        // server sending "\uD83D" (high surrogate
+                        // with no low) would otherwise produce an
+                        // ill-formed UTF-16 string we then put into
+                        // a WinForms label. WinForms tolerates lone
+                        // surrogates but downstream code (clipboard
+                        // copy, JSON re-serialise) may not.
+                        ushort code;
+                        if (!TryParseUnicodeEscape(json, i, out code)) return null;
+                        if (char.IsLowSurrogate((char)code)) return null;
+                        if (char.IsHighSurrogate((char)code))
                         {
-                            char hc = json[h];
-                            if (!((hc >= '0' && hc <= '9')
-                                || (hc >= 'a' && hc <= 'f')
-                                || (hc >= 'A' && hc <= 'F')))
-                            {
-                                return null;
-                            }
+                            // Need an immediately-following \uDC00-\uDFFF.
+                            if (i + 11 >= json.Length) return null;
+                            if (json[i + 6] != '\\' || json[i + 7] != 'u') return null;
+                            ushort low;
+                            if (!TryParseUnicodeEscape(json, i + 6, out low)) return null;
+                            if (!char.IsLowSurrogate((char)low)) return null;
+                            sb.Append((char)code);
+                            sb.Append((char)low);
+                            i += 11;  // past both \uXXXX\uYYYY
                         }
-                        var hex = json.Substring(i + 2, 4);
-                        if (!ushort.TryParse(hex, System.Globalization.NumberStyles.HexNumber,
-                                System.Globalization.CultureInfo.InvariantCulture, out var code))
+                        else
                         {
-                            return null;
+                            sb.Append((char)code);
+                            i += 5;
                         }
-                        sb.Append((char)code);
-                        i += 5;
                         break;
                     default:
                         // Unknown escape — preserve the backslash so the
@@ -343,6 +351,31 @@ namespace EQ2Lexicon.ACTPlugin
                 }
             }
             return null;
+        }
+
+        /// <summary>
+        /// Parse the 4 hex digits at position <paramref name="escapeStart"/>
+        /// (the position of the `\` in `\uXXXX`) into a ushort code unit.
+        /// Returns false on out-of-bounds or non-hex digits. Extracted so
+        /// the surrogate-pair handling can call it twice cleanly.
+        /// </summary>
+        private static bool TryParseUnicodeEscape(string json, int escapeStart, out ushort code)
+        {
+            code = 0;
+            if (escapeStart + 5 >= json.Length) return false;
+            for (int h = escapeStart + 2; h < escapeStart + 6; h++)
+            {
+                char hc = json[h];
+                if (!((hc >= '0' && hc <= '9')
+                    || (hc >= 'a' && hc <= 'f')
+                    || (hc >= 'A' && hc <= 'F')))
+                {
+                    return false;
+                }
+            }
+            var hex = json.Substring(escapeStart + 2, 4);
+            return ushort.TryParse(hex, System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out code);
         }
 
         // -------------------------------------------------------------------

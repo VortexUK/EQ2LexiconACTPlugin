@@ -112,7 +112,13 @@ Dependabot (`.github/dependabot.yml`) opens weekly PRs for NuGet packages in the
   - Never echoed in status labels, error messages, log lines, or the "Show payload" dialog.
 - The site's response is parsed by a hand-rolled `ExtractJsonString` (not a full JSON parser). It's bounded by the response body size and only extracts the single `detail` / `status` / `discord_name` string fields — no nested-structure trust.
 
-See the audit findings + fixes in commits `9eb39e0` (v0.1.4) and `5f9e11a` (v0.1.5).
+See the audit findings + fixes in commits `9eb39e0` (v0.1.4) and `5f9e11a` (v0.1.5). A follow-up audit covering v0.1.5 → v0.1.12 shipped in v0.1.13 — findings were all defence-in-depth (no exploitable boundary breaches), summarised in that commit. Top items:
+
+- `UpdateInstaller`'s PowerShell helper now escapes single quotes in paths and uses `-LiteralPath` everywhere — Windows usernames containing apostrophes (`O'Brien`, `D'Souza`) previously broke the on-exit swap silently.
+- `HttpDllAssetFetcher` enforces HTTPS + a GitHub-host allowlist + manual redirect handling (max 5 hops, scheme + host re-validated at each) + `MaxResponseContentBufferSize` cap. The SHA-256 verify in `PluginUpdater` is still the actual integrity gate; these are belt-and-brace defence against a tampered release-feed JSON.
+- `UpdateChecker.FindDllAsset` now scopes its search to the `"assets":[ ... ]` array via bracket-counting, so a maintainer's display name ending in `.dll` or a release-notes blob containing literal `"tag_name"` can't confuse the asset lookup.
+- `ExtractJsonString` rejects lone UTF-16 surrogates (`\uD83D` with no following low surrogate).
+- Server-side: `_sanitize_world` regex on `logger_server` + `_VALID_CHARACTER_NAME_RE` (1-15 letters) on `logger_name` keep malformed payloads out of Census URLs and `character_cache` keys.
 
 ## Payload integrity (HMAC, v0.1.8+)
 

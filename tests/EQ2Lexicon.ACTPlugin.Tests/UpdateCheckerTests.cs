@@ -346,6 +346,59 @@ namespace EQ2Lexicon.ACTPlugin.Tests
         }
 
         [Fact]
+        public void ParseLatestDllAsset_IgnoresDllNamedAuthorOrUploader()
+        {
+            // Audit M1: pre-v0.1.13, FindDllAsset walked every "name"
+            // field in the release block. A maintainer with a display
+            // name ending in ".dll" (GitHub usernames allow dots) would
+            // be picked up as a fake asset → ParseLatestDllAsset would
+            // return ("", "") because no browser_download_url adjacent
+            // to the author's name field. Now scoped to "assets":[...].
+            var json = @"[{
+                ""tag_name"": ""v0.1.12"",
+                ""draft"": false,
+                ""author"": {""name"": ""malicious-actor.dll"", ""url"": ""https://evil/""},
+                ""uploader"": {""name"": ""another.dll""},
+                ""assets"": [
+                    {
+                        ""name"": ""EQ2Lexicon.ACTPlugin.dll"",
+                        ""browser_download_url"": ""https://example/legit.dll"",
+                        ""digest"": ""sha256:legit""
+                    }
+                ]
+            }]";
+            var (url, sha) = UpdateChecker.ParseLatestDllAsset(json);
+            Assert.Equal("https://example/legit.dll", url);
+            Assert.Equal("legit", sha);
+        }
+
+        [Fact]
+        public void ParseLatestDllAsset_HandlesReleaseBodyContainingTagNameLiteral()
+        {
+            // Audit M1: pre-v0.1.13, the block-end was approximated as
+            // "the next '\"tag_name\"' substring". A release whose body
+            // text contained that literal (e.g. a copy-pasted JSON
+            // snippet in the release notes) would split the block early
+            // and miss the assets array. Now we scope by finding the
+            // "assets":[ ... ] array via bracket-counting.
+            var json = @"[{
+                ""tag_name"": ""v0.1.12"",
+                ""body"": ""Some notes mentioning \""tag_name\"": \""v9.9.9\"" as an example."",
+                ""draft"": false,
+                ""assets"": [
+                    {
+                        ""name"": ""EQ2Lexicon.ACTPlugin.dll"",
+                        ""browser_download_url"": ""https://example/x.dll"",
+                        ""digest"": ""sha256:abc""
+                    }
+                ]
+            }]";
+            var (url, sha) = UpdateChecker.ParseLatestDllAsset(json);
+            Assert.Equal("https://example/x.dll", url);
+            Assert.Equal("abc", sha);
+        }
+
+        [Fact]
         public void ParseLatestDllAsset_DigestPrefixCaseInsensitive()
         {
             // GH consistently uses lowercase "sha256:" but pin the

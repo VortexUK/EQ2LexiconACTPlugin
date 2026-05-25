@@ -33,11 +33,32 @@ namespace EQ2Lexicon.ACTPlugin
     }
 
     /// <summary>
-    /// Production fetcher — wraps HttpClient and applies the same
-    /// User-Agent contract the rest of the plugin uses.
+    /// Production fetcher — wraps HttpClient and applies hardening
+    /// suitable for downloading executable code from the internet:
+    ///
+    ///   * Initial URL must be https:// — refuses http:// (which
+    ///     a tampered GH JSON could otherwise downgrade us to).
+    ///   * Initial host AND every redirect host must be on the
+    ///     allowlist (github.com or *.githubusercontent.com — GH
+    ///     legitimately 302s from the API URL to the CDN).
+    ///   * Auto-redirect is disabled; we follow redirects manually
+    ///     with a hard 5-hop cap and a per-hop scheme + host check.
+    ///   * Response buffer size is capped at MaxDllBytes so a
+    ///     hostile chunked-encoding body can't OOM the host before
+    ///     PluginUpdater's post-download size check fires.
+    ///
+    /// These are defence-in-depth — the SHA-256 verify in
+    /// PluginUpdater is the actual gate that decides whether bytes
+    /// get staged. But pinning the wire path costs ~30 lines and
+    /// closes a class of "what if the GH JSON is tampered" scenarios
+    /// where the digest verify would still succeed against a hostile
+    /// download (e.g. attacker controls both the URL and the digest
+    /// in the JSON response).
     /// </summary>
     public class HttpDllAssetFetcher : IDllAssetFetcher
     {
+        private const int MaxRedirects = 5;
+
         private readonly HttpClient _http;
         private readonly string _userAgent;
 
@@ -45,23 +66,87 @@ namespace EQ2Lexicon.ACTPlugin
         {
             _http = http;
             _userAgent = string.IsNullOrWhiteSpace(userAgent) ? "EQ2LexiconACTPlugin" : userAgent;
+            // Hard ceiling on response body — beat the post-download
+            // length check so a 1 GB hostile body can't be fully read
+            // into memory before we notice.
+            try { _http.MaxResponseContentBufferSize = PluginUpdater.MaxDllBytes + 1; }
+            catch { /* HttpClient may already have sent a request; ignore */ }
         }
 
         public async Task<byte[]> FetchAsync(string url)
         {
-            using (var req = new HttpRequestMessage(HttpMethod.Get, url))
+            Uri current;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out current))
+                throw new InvalidOperationException("Asset URL is not a valid absolute URI.");
+            ValidateAssetUri(current);
+
+            // Manual redirect chain — re-check scheme and host at each
+            // hop so a downgrade or off-domain redirect can't slip in.
+            for (int hop = 0; hop < MaxRedirects; hop++)
             {
-                req.Headers.UserAgent.ParseAdd(_userAgent);
-                using (var resp = await _http.SendAsync(req).ConfigureAwait(false))
+                using (var req = new HttpRequestMessage(HttpMethod.Get, current))
                 {
-                    if (!resp.IsSuccessStatusCode)
+                    req.Headers.UserAgent.ParseAdd(_userAgent);
+                    using (var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false))
                     {
-                        throw new HttpRequestException(
-                            $"HTTP {(int)resp.StatusCode} {resp.StatusCode} when fetching {url}");
+                        var code = (int)resp.StatusCode;
+                        if (code >= 300 && code < 400 && resp.Headers.Location != null)
+                        {
+                            var next = resp.Headers.Location.IsAbsoluteUri
+                                ? resp.Headers.Location
+                                : new Uri(current, resp.Headers.Location);
+                            ValidateAssetUri(next);
+                            current = next;
+                            continue;
+                        }
+                        if (!resp.IsSuccessStatusCode)
+                        {
+                            throw new HttpRequestException(
+                                $"HTTP {code} {resp.StatusCode} when fetching {current}");
+                        }
+                        // Pre-check Content-Length when the server
+                        // gave us one — fail fast before allocating.
+                        var clen = resp.Content.Headers.ContentLength;
+                        if (clen.HasValue && clen.Value > PluginUpdater.MaxDllBytes)
+                        {
+                            throw new HttpRequestException(
+                                $"Response Content-Length ({clen.Value}) exceeds cap.");
+                        }
+                        return await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
                     }
-                    return await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
                 }
             }
+            throw new InvalidOperationException("Too many redirects fetching asset.");
+        }
+
+        /// <summary>
+        /// Enforce https + the GitHub-domain allowlist on every URL
+        /// we follow. Public + static so PluginUpdater tests can
+        /// pin the rules without the HTTP machinery.
+        /// </summary>
+        public static void ValidateAssetUri(Uri uri)
+        {
+            if (uri == null) throw new InvalidOperationException("Asset URI is null.");
+            if (uri.Scheme != Uri.UriSchemeHttps)
+                throw new InvalidOperationException(
+                    $"Asset URI scheme '{uri.Scheme}' rejected — only https:// is allowed.");
+            if (!IsAllowedAssetHost(uri.Host))
+                throw new InvalidOperationException(
+                    $"Asset URI host '{uri.Host}' is not on the GitHub allowlist.");
+        }
+
+        /// <summary>
+        /// Allowed hosts for GitHub release-asset downloads. GH
+        /// release URLs start at github.com and 302 to the
+        /// objects.githubusercontent.com CDN; both must be permitted.
+        /// </summary>
+        internal static bool IsAllowedAssetHost(string host)
+        {
+            if (string.IsNullOrWhiteSpace(host)) return false;
+            var h = host.ToLowerInvariant();
+            return h == "github.com"
+                || h == "objects.githubusercontent.com"
+                || h.EndsWith(".githubusercontent.com");
         }
     }
 
