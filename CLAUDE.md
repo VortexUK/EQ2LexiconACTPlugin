@@ -139,6 +139,22 @@ Every upload includes an `X-Lexicon-Signature` header: HMAC-SHA256 of the reques
 
 **Rollout coordination with the server**: ship the server's signature validator in *opportunistic* mode first (validate only if header present, reject only if validation fails) so existing v0.1.7 installs keep uploading. Flip to *strict* mode (require the header) once telemetry shows ≥98% of uploads carry it — pulled from the `User-Agent` header which UploadClient sets to `EQ2LexiconACTPlugin/<assembly version>`.
 
+## Required server-side changes (pending in [VortexUK/EQ2Lexicon](https://github.com/VortexUK/EQ2Lexicon))
+
+The plugin already wires UI for two fields that the production server does not yet emit. Until the server PRs land, the plugin falls back to safe defaults (URL field stays locked; allowed-servers card shows a built-in list).
+
+### `is_admin` on `/api/auth/whoami`
+
+Add a boolean `is_admin` to the JSON response. Drives the Server URL field's editability gate in the plugin — only admins can change the endpoint. Fail-CLOSED in the plugin: if the field is missing the URL stays locked, so a non-admin can never see a writable URL field by simply pointing at an old build of the server. Same opportunistic-rollout pattern as the HMAC header in v0.1.8 — additive field, ignored by old clients, used by new ones.
+
+### `allowed_servers` on `/api/auth/whoami`
+
+Add an array of EQ2 server name strings (e.g. `["Varsoon", "Wuoshi"]`) the user is permitted to upload from. Drives the ALLOWED SERVERS card in the settings panel — read-only display so the user knows up-front which characters' parses will reach the site. The list could be a global default, per-guild, or per-user — server's choice; the plugin just renders what it's given. Sanitisation in the plugin caps each entry at 64 chars and the whole array at 32 entries to keep a hostile/buggy server from breaking the UI layout.
+
+When absent, the plugin uses a built-in default of `["Varsoon", "Wuoshi"]` (the two active English-language EQ2 TLE servers as of 2026). When the server starts returning the field, the built-in default is replaced by whatever the site says on the next whoami round-trip.
+
+Future enforcement: the server should *also* validate `logger_server` on incoming uploads against the same list and reject mismatched uploads with a 403. The plugin's display is courtesy/transparency; the real gate is the server.
+
 ## Update awareness (v0.1.8+)
 
 The plugin fetches `https://api.github.com/repos/VortexUK/EQ2LexiconACTPlugin/releases` once per ACT session, compares the assembly version to the published tags, and:

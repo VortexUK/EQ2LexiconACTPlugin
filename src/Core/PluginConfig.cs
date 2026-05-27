@@ -9,6 +9,21 @@ using System.Xml.Serialization;
 namespace EQ2Lexicon.ACTPlugin
 {
     /// <summary>
+    /// One row of the (Character, Server) blacklist surfaced in the
+    /// settings panel. Plain DTO; equality / serialization use the
+    /// two string properties directly. A blank Server means "match
+    /// any EQ2 server" — the legacy v0.1.13 semantics.
+    /// </summary>
+    public class BlacklistedEntry
+    {
+        [XmlAttribute("character")]
+        public string Character { get; set; } = "";
+
+        [XmlAttribute("server")]
+        public string Server { get; set; } = "";
+    }
+
+    /// <summary>
     /// User-configurable settings, persisted as XML.
     ///
     /// The CALLER supplies the on-disk path to Load/Save — see
@@ -58,22 +73,71 @@ namespace EQ2Lexicon.ACTPlugin
         public bool UploadEnabled { get; set; } = false;
 
         /// <summary>
-        /// Character names to NEVER upload as. Encounters where ACT's
-        /// active logging character is in this list are skipped silently.
-        /// Useful for alts you don't want to attribute parses to (e.g. a
-        /// non-guild bank toon, low-level alts, etc.). Match is
-        /// case-insensitive on exact name.
+        /// LEGACY — character-name-only blacklist. v0.1.13 and earlier
+        /// stored a flat list of names which matched regardless of EQ2
+        /// server, so a player with the same character name on two
+        /// servers (e.g. an alt on Wuoshi sharing a name with a main on
+        /// Varsoon) couldn't blacklist one without blacklisting both.
+        ///
+        /// Still serialized as <c>&lt;BlacklistedCharacters&gt;</c> in
+        /// the XML so an existing v0.1.13 config file can be loaded
+        /// without data loss. On <see cref="Load"/>, any entries here
+        /// are migrated into <see cref="BlacklistedEntries"/> (with
+        /// Server="" = "any server", preserving the legacy semantics)
+        /// and this list is cleared before the next Save persists.
         /// </summary>
         [XmlArray("BlacklistedCharacters")]
         [XmlArrayItem("Character")]
         public List<string> BlacklistedCharacters { get; set; } = new List<string>();
 
-        public bool IsBlacklisted(string characterName)
+        /// <summary>
+        /// Structured blacklist replacing <see cref="BlacklistedCharacters"/>.
+        /// Each entry is a (Character, Server) pair. A blank Server
+        /// matches any server (i.e. the legacy semantics). Encounters
+        /// where ACT's active logging character matches an entry AND
+        /// the current server is allowed by that entry are skipped
+        /// silently. Match is case-insensitive on both fields.
+        /// </summary>
+        [XmlArray("BlacklistedEntries")]
+        [XmlArrayItem("Entry")]
+        public List<BlacklistedEntry> BlacklistedEntries { get; set; } = new List<BlacklistedEntry>();
+
+        /// <summary>
+        /// Returns true when <paramref name="characterName"/> on
+        /// <paramref name="serverName"/> should NOT upload. Matches:
+        /// (a) any BlacklistedEntries row whose Character equals the
+        ///     given name AND whose Server is blank (= any) or equals
+        ///     the given server name; PLUS
+        /// (b) any legacy BlacklistedCharacters entry that equals the
+        ///     given name — kept so a unit test that constructs a
+        ///     PluginConfig in memory without going through Load()
+        ///     still gets the old semantics. After Load() migrates
+        ///     them, the legacy list is empty and (b) is a no-op.
+        /// </summary>
+        public bool IsBlacklisted(string characterName, string serverName)
         {
             if (string.IsNullOrWhiteSpace(characterName)) return false;
-            return BlacklistedCharacters.Any(b =>
-                !string.IsNullOrWhiteSpace(b) &&
-                string.Equals(b.Trim(), characterName.Trim(), StringComparison.OrdinalIgnoreCase));
+            var cName = characterName.Trim();
+            var sName = (serverName ?? "").Trim();
+
+            foreach (var entry in BlacklistedEntries)
+            {
+                if (entry == null) continue;
+                if (string.IsNullOrWhiteSpace(entry.Character)) continue;
+                if (!string.Equals(entry.Character.Trim(), cName, StringComparison.OrdinalIgnoreCase)) continue;
+                // Blank server in the entry means "any server".
+                if (string.IsNullOrWhiteSpace(entry.Server)) return true;
+                if (string.Equals(entry.Server.Trim(), sName, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+
+            // Legacy list — treated as "any server" matches. Empty
+            // after Load() runs the migration.
+            foreach (var legacy in BlacklistedCharacters)
+            {
+                if (string.IsNullOrWhiteSpace(legacy)) continue;
+                if (string.Equals(legacy.Trim(), cName, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
         }
 
         // -------------------------------------------------------------------
@@ -159,6 +223,7 @@ namespace EQ2Lexicon.ACTPlugin
                     {
                         loaded.ServerUrl = DefaultServerUrl;
                     }
+                    loaded.MigrateLegacyBlacklist();
                     return loaded;
                 }
             }
@@ -169,6 +234,39 @@ namespace EQ2Lexicon.ACTPlugin
                 // and re-save.
                 return new PluginConfig();
             }
+        }
+
+        /// <summary>
+        /// One-shot migration: copy any names from the legacy
+        /// <see cref="BlacklistedCharacters"/> list into the
+        /// structured <see cref="BlacklistedEntries"/> with Server=""
+        /// (= match any server, preserving the v0.1.13 semantics),
+        /// then clear the legacy list so the next Save persists only
+        /// the new shape. Idempotent — running twice is a no-op
+        /// because the second pass sees an empty legacy list.
+        ///
+        /// De-duplicates: a legacy name that's already represented
+        /// (same character, any-server entry) in the new list is
+        /// skipped rather than added twice.
+        /// </summary>
+        internal void MigrateLegacyBlacklist()
+        {
+            if (BlacklistedCharacters == null || BlacklistedCharacters.Count == 0) return;
+            if (BlacklistedEntries == null) BlacklistedEntries = new List<BlacklistedEntry>();
+
+            foreach (var legacy in BlacklistedCharacters)
+            {
+                if (string.IsNullOrWhiteSpace(legacy)) continue;
+                var name = legacy.Trim();
+                bool alreadyPresent = BlacklistedEntries.Any(e =>
+                    e != null
+                    && !string.IsNullOrWhiteSpace(e.Character)
+                    && string.IsNullOrWhiteSpace(e.Server)
+                    && string.Equals(e.Character.Trim(), name, StringComparison.OrdinalIgnoreCase));
+                if (alreadyPresent) continue;
+                BlacklistedEntries.Add(new BlacklistedEntry { Character = name, Server = "" });
+            }
+            BlacklistedCharacters.Clear();
         }
 
         public void Save(string path)

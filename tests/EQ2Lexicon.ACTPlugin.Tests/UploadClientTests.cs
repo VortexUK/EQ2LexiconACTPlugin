@@ -1,3 +1,4 @@
+using System.Linq;
 using Xunit;
 
 namespace EQ2Lexicon.ACTPlugin.Tests
@@ -251,6 +252,249 @@ namespace EQ2Lexicon.ACTPlugin.Tests
             var body = "{\"status\": 42}";
             Assert.Null(UploadClient.ExtractJsonString(body, "status"));
         }
+
+        // ── ExtractJsonBool ────────────────────────────────────────────────
+        // Sibling of ExtractJsonString — surfaces the whoami `is_admin`
+        // boolean so the settings panel can lock the Server URL field
+        // for non-admin accounts. Fail-CLOSED on anything that isn't a
+        // clear `true`/`false` literal.
+
+        [Fact]
+        public void ExtractJsonBool_PullsTrue()
+        {
+            var body = "{\"is_admin\": true, \"discord_name\": \"alice\"}";
+            Assert.Equal(true, UploadClient.ExtractJsonBool(body, "is_admin"));
+        }
+
+        [Fact]
+        public void ExtractJsonBool_PullsFalse()
+        {
+            var body = "{\"is_admin\": false}";
+            Assert.Equal(false, UploadClient.ExtractJsonBool(body, "is_admin"));
+        }
+
+        [Fact]
+        public void ExtractJsonBool_HandlesNoSpaceAfterColon()
+        {
+            var body = "{\"is_admin\":true}";
+            Assert.Equal(true, UploadClient.ExtractJsonBool(body, "is_admin"));
+        }
+
+        [Fact]
+        public void ExtractJsonBool_MissingFieldReturnsNull()
+        {
+            // Outdated server that doesn't yet ship `is_admin` — caller
+            // treats null as "not admin" (the lock-the-URL default).
+            var body = "{\"discord_name\":\"alice\"}";
+            Assert.Null(UploadClient.ExtractJsonBool(body, "is_admin"));
+        }
+
+        [Fact]
+        public void ExtractJsonBool_EmptyInputReturnsNull()
+        {
+            Assert.Null(UploadClient.ExtractJsonBool("", "is_admin"));
+            Assert.Null(UploadClient.ExtractJsonBool(null!, "is_admin"));
+        }
+
+        [Fact]
+        public void ExtractJsonBool_NumericValueReturnsNull()
+        {
+            // {"is_admin": 1} — a sloppy server using 0/1 ints. We
+            // refuse to coerce; better to lock the URL than to
+            // mis-interpret a truthy int as admin.
+            var body = "{\"is_admin\": 1}";
+            Assert.Null(UploadClient.ExtractJsonBool(body, "is_admin"));
+        }
+
+        [Fact]
+        public void ExtractJsonBool_StringTrueReturnsNull()
+        {
+            // {"is_admin": "true"} — a string, not a bool literal.
+            var body = "{\"is_admin\": \"true\"}";
+            Assert.Null(UploadClient.ExtractJsonBool(body, "is_admin"));
+        }
+
+        [Fact]
+        public void ExtractJsonBool_NullValueReturnsNull()
+        {
+            var body = "{\"is_admin\": null}";
+            Assert.Null(UploadClient.ExtractJsonBool(body, "is_admin"));
+        }
+
+        [Fact]
+        public void ExtractJsonBool_TruelyDoesNotMatchTrue()
+        {
+            // Bare "truely" or "trueish" — boundary check prevents
+            // accidental prefix match on a non-bool literal.
+            var body = "{\"is_admin\": truely}";
+            Assert.Null(UploadClient.ExtractJsonBool(body, "is_admin"));
+        }
+
+        [Fact]
+        public void ExtractJsonBool_TrailingWhitespaceOk()
+        {
+            // Token followed by whitespace is a valid JSON boundary.
+            var body = "{\"is_admin\":true , \"x\":1}";
+            Assert.Equal(true, UploadClient.ExtractJsonBool(body, "is_admin"));
+        }
+
+        [Fact]
+        public void ExtractJsonBool_TrailingCommaOk()
+        {
+            var body = "{\"is_admin\":false,\"x\":1}";
+            Assert.Equal(false, UploadClient.ExtractJsonBool(body, "is_admin"));
+        }
+
+        [Fact]
+        public void ExtractJsonBool_TrailingBraceOk()
+        {
+            // End-of-object is the most common position.
+            var body = "{\"is_admin\":true}";
+            Assert.Equal(true, UploadClient.ExtractJsonBool(body, "is_admin"));
+        }
+
+        [Fact]
+        public void ExtractJsonBool_OtherFieldUntouched()
+        {
+            // Make sure asking for one field doesn't pick up a value
+            // from another (was a class of bug in earlier hand-rolled
+            // JSON extractors).
+            var body = "{\"other\": true, \"is_admin\": false}";
+            Assert.Equal(false, UploadClient.ExtractJsonBool(body, "is_admin"));
+            Assert.Equal(true, UploadClient.ExtractJsonBool(body, "other"));
+        }
+
+
+        // ── ExtractJsonStringArray ─────────────────────────────────────────
+        // Pulls a JSON array-of-strings out of the whoami response,
+        // used for the allowed_servers list rendered in the settings
+        // panel. Same fail-closed posture as ExtractJsonString/Bool —
+        // anything weird returns null and the caller substitutes a
+        // safe default.
+
+        [Fact]
+        public void ExtractJsonStringArray_PullsSimpleArray()
+        {
+            var body = "{\"allowed_servers\": [\"Varsoon\", \"Wuoshi\"]}";
+            var got = UploadClient.ExtractJsonStringArray(body, "allowed_servers");
+            Assert.NotNull(got);
+            Assert.Equal(new[] { "Varsoon", "Wuoshi" }, got);
+        }
+
+        [Fact]
+        public void ExtractJsonStringArray_HandlesNoSpaceAfterColon()
+        {
+            var body = "{\"allowed_servers\":[\"Varsoon\"]}";
+            var got = UploadClient.ExtractJsonStringArray(body, "allowed_servers");
+            Assert.Equal(new[] { "Varsoon" }, got);
+        }
+
+        [Fact]
+        public void ExtractJsonStringArray_EmptyArrayReturnsEmptyList()
+        {
+            // Explicit `[]` is different from a missing field — the
+            // server SAID "no servers allowed" and we surface that
+            // (the UI shows an empty list, the user contacts support).
+            var body = "{\"allowed_servers\": []}";
+            var got = UploadClient.ExtractJsonStringArray(body, "allowed_servers");
+            Assert.NotNull(got);
+            Assert.Empty(got);
+        }
+
+        [Fact]
+        public void ExtractJsonStringArray_MissingFieldReturnsNull()
+        {
+            // Outdated server that doesn't ship the field — caller
+            // substitutes a built-in default.
+            var body = "{\"discord_name\":\"alice\"}";
+            Assert.Null(UploadClient.ExtractJsonStringArray(body, "allowed_servers"));
+        }
+
+        [Fact]
+        public void ExtractJsonStringArray_HandlesEscapedQuoteInsideElement()
+        {
+            // Unlikely for server names but the extractor's general
+            // — pin it so a future use elsewhere doesn't surprise us.
+            var body = "{\"allowed_servers\": [\"Server \\\"Alpha\\\"\"]}";
+            var got = UploadClient.ExtractJsonStringArray(body, "allowed_servers");
+            Assert.Equal(new[] { "Server \"Alpha\"" }, got);
+        }
+
+        [Fact]
+        public void ExtractJsonStringArray_TrimsWhitespaceInsideElements()
+        {
+            var body = "{\"allowed_servers\": [\"  Varsoon  \", \"\\tWuoshi\\n\"]}";
+            var got = UploadClient.ExtractJsonStringArray(body, "allowed_servers");
+            Assert.Equal(new[] { "Varsoon", "Wuoshi" }, got);
+        }
+
+        [Fact]
+        public void ExtractJsonStringArray_DropsEmptyElements()
+        {
+            // Whitespace-only entries are silently dropped — they'd
+            // render as blank rows in the UI otherwise.
+            var body = "{\"allowed_servers\": [\"Varsoon\", \"\", \"   \", \"Wuoshi\"]}";
+            var got = UploadClient.ExtractJsonStringArray(body, "allowed_servers");
+            Assert.Equal(new[] { "Varsoon", "Wuoshi" }, got);
+        }
+
+        [Fact]
+        public void ExtractJsonStringArray_RejectsNonStringElement()
+        {
+            // {"allowed_servers": ["Varsoon", 42]} — refuse the whole
+            // array rather than partial result, to avoid the UI
+            // showing a sanitised view that doesn't match the server.
+            var body = "{\"allowed_servers\": [\"Varsoon\", 42]}";
+            Assert.Null(UploadClient.ExtractJsonStringArray(body, "allowed_servers"));
+        }
+
+        [Fact]
+        public void ExtractJsonStringArray_RejectsNonArrayValue()
+        {
+            // {"allowed_servers": "Varsoon"} — single string, not array.
+            var body = "{\"allowed_servers\": \"Varsoon\"}";
+            Assert.Null(UploadClient.ExtractJsonStringArray(body, "allowed_servers"));
+        }
+
+        [Fact]
+        public void ExtractJsonStringArray_RejectsUnclosedArray()
+        {
+            // Server cuts off mid-response — we shouldn't return a
+            // partial result.
+            var body = "{\"allowed_servers\": [\"Varsoon\", \"Wuo";
+            Assert.Null(UploadClient.ExtractJsonStringArray(body, "allowed_servers"));
+        }
+
+        [Fact]
+        public void ExtractJsonStringArray_RejectsTooLongEntry()
+        {
+            // Hostile server sends a 1000-char string in an entry —
+            // we refuse rather than render a row that breaks the
+            // UI layout.
+            var longName = new string('x', 200);
+            var body = $"{{\"allowed_servers\": [\"{longName}\"]}}";
+            Assert.Null(UploadClient.ExtractJsonStringArray(body, "allowed_servers"));
+        }
+
+        [Fact]
+        public void ExtractJsonStringArray_RejectsTooManyEntries()
+        {
+            // Hostile / buggy server sends thousands of entries.
+            var entries = string.Join(",", System.Linq.Enumerable.Range(0, 50)
+                .Select(i => $"\"s{i}\""));
+            var body = $"{{\"allowed_servers\": [{entries}]}}";
+            Assert.Null(UploadClient.ExtractJsonStringArray(body, "allowed_servers"));
+        }
+
+        [Fact]
+        public void ExtractJsonStringArray_HandlesSurroundingFields()
+        {
+            // Realistic shape — other fields before AND after the array.
+            var body = "{\"discord_name\":\"alice\",\"allowed_servers\":[\"Varsoon\",\"Wuoshi\"],\"is_admin\":true}";
+            var got = UploadClient.ExtractJsonStringArray(body, "allowed_servers");
+            Assert.Equal(new[] { "Varsoon", "Wuoshi" }, got);
+        }
+
 
         // ── Truncate ───────────────────────────────────────────────────────
 

@@ -1,5 +1,7 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Xml.Serialization;
 using Xunit;
 
@@ -18,6 +20,8 @@ namespace EQ2Lexicon.ACTPlugin.Tests
             Assert.Equal("", cfg.ApiToken);
             Assert.NotNull(cfg.BlacklistedCharacters);
             Assert.Empty(cfg.BlacklistedCharacters);
+            Assert.NotNull(cfg.BlacklistedEntries);
+            Assert.Empty(cfg.BlacklistedEntries);
         }
 
         [Fact]
@@ -109,57 +113,195 @@ namespace EQ2Lexicon.ACTPlugin.Tests
         }
 
         // ── IsBlacklisted ──────────────────────────────────────────────────
+        // Tests cover both the structured BlacklistedEntries (new shape) and
+        // the legacy BlacklistedCharacters list (still honoured at query
+        // time so configs constructed in-memory pre-Load() behave correctly).
+
+        private static PluginConfig WithEntries(params (string character, string server)[] entries)
+        {
+            return new PluginConfig
+            {
+                BlacklistedEntries = entries
+                    .Select(e => new BlacklistedEntry { Character = e.character, Server = e.server })
+                    .ToList(),
+            };
+        }
 
         [Fact]
         public void IsBlacklisted_FalseForEmptyOrNull()
         {
-            var cfg = new PluginConfig { BlacklistedCharacters = new List<string> { "Bob" } };
-            Assert.False(cfg.IsBlacklisted(""));
-            Assert.False(cfg.IsBlacklisted("   "));
-            Assert.False(cfg.IsBlacklisted(null!));
+            var cfg = WithEntries(("Bob", ""));
+            Assert.False(cfg.IsBlacklisted("", "Varsoon"));
+            Assert.False(cfg.IsBlacklisted("   ", "Varsoon"));
+            Assert.False(cfg.IsBlacklisted(null!, "Varsoon"));
         }
 
         [Fact]
-        public void IsBlacklisted_TrueForExactMatch()
+        public void IsBlacklisted_TrueForExactMatch_AnyServerEntry()
         {
-            var cfg = new PluginConfig { BlacklistedCharacters = new List<string> { "Menludiir" } };
-            Assert.True(cfg.IsBlacklisted("Menludiir"));
+            // Server="" entry = match any server (legacy semantics).
+            var cfg = WithEntries(("Menludiir", ""));
+            Assert.True(cfg.IsBlacklisted("Menludiir", "Varsoon"));
+            Assert.True(cfg.IsBlacklisted("Menludiir", "Wuoshi"));
+            Assert.True(cfg.IsBlacklisted("Menludiir", ""));
         }
 
         [Fact]
-        public void IsBlacklisted_IsCaseInsensitive()
+        public void IsBlacklisted_CharacterMatchesButWrongServer_ReturnsFalse()
         {
-            var cfg = new PluginConfig { BlacklistedCharacters = new List<string> { "Menludiir" } };
-            Assert.True(cfg.IsBlacklisted("menludiir"));
-            Assert.True(cfg.IsBlacklisted("MENLUDIIR"));
+            // Entry pins Server=Varsoon → a same-named alt on Wuoshi
+            // must NOT be blacklisted. The whole point of the schema
+            // change.
+            var cfg = WithEntries(("Menludiir", "Varsoon"));
+            Assert.True(cfg.IsBlacklisted("Menludiir", "Varsoon"));
+            Assert.False(cfg.IsBlacklisted("Menludiir", "Wuoshi"));
+            Assert.False(cfg.IsBlacklisted("Menludiir", ""));
+        }
+
+        [Fact]
+        public void IsBlacklisted_MultipleEntriesUnioned()
+        {
+            // Different entries cover different (char, server) pairs;
+            // a query against any one should be blacklisted.
+            var cfg = WithEntries(
+                ("Menludiir", "Varsoon"),
+                ("Sihtric", "Wuoshi"),
+                ("Bankerbob", ""));
+            Assert.True(cfg.IsBlacklisted("Menludiir", "Varsoon"));
+            Assert.True(cfg.IsBlacklisted("Sihtric", "Wuoshi"));
+            Assert.True(cfg.IsBlacklisted("Bankerbob", "Varsoon"));   // any-server entry
+            Assert.False(cfg.IsBlacklisted("Menludiir", "Wuoshi"));
+            Assert.False(cfg.IsBlacklisted("Sihtric", "Varsoon"));
+        }
+
+        [Fact]
+        public void IsBlacklisted_IsCaseInsensitive_OnBothFields()
+        {
+            var cfg = WithEntries(("Menludiir", "Varsoon"));
+            Assert.True(cfg.IsBlacklisted("menludiir", "varsoon"));
+            Assert.True(cfg.IsBlacklisted("MENLUDIIR", "VARSOON"));
+            Assert.True(cfg.IsBlacklisted("MenLudiir", "VarSoon"));
         }
 
         [Fact]
         public void IsBlacklisted_TrimsWhitespace()
         {
-            // Defensive: users editing the textbox can easily leave a
-            // trailing space when they delete a name and the blank line
-            // ends up persisted.
-            var cfg = new PluginConfig { BlacklistedCharacters = new List<string> { "  Menludiir  " } };
-            Assert.True(cfg.IsBlacklisted("Menludiir"));
-            Assert.True(cfg.IsBlacklisted("  Menludiir  "));
+            // Defensive: a stray trailing space typed into the editor
+            // shouldn't cause the match to silently fail.
+            var cfg = WithEntries(("  Menludiir  ", "  Varsoon  "));
+            Assert.True(cfg.IsBlacklisted("Menludiir", "Varsoon"));
+            Assert.True(cfg.IsBlacklisted("  Menludiir  ", "  Varsoon  "));
         }
 
         [Fact]
         public void IsBlacklisted_IgnoresEmptyEntriesInList()
         {
-            // Empty-string and whitespace entries must not act as a wildcard
+            // An entry with a blank Character must NOT act as a wildcard
             // that blacklists every character.
-            var cfg = new PluginConfig { BlacklistedCharacters = new List<string> { "", "   ", "Menludiir" } };
-            Assert.False(cfg.IsBlacklisted("Sihtric"));
-            Assert.True(cfg.IsBlacklisted("Menludiir"));
+            var cfg = WithEntries(("", "Varsoon"), ("   ", ""), ("Menludiir", ""));
+            Assert.False(cfg.IsBlacklisted("Sihtric", "Varsoon"));
+            Assert.True(cfg.IsBlacklisted("Menludiir", "Varsoon"));
         }
 
         [Fact]
         public void IsBlacklisted_NoMatchReturnsFalse()
         {
-            var cfg = new PluginConfig { BlacklistedCharacters = new List<string> { "Bob", "Alice" } };
-            Assert.False(cfg.IsBlacklisted("Menludiir"));
+            var cfg = WithEntries(("Bob", ""), ("Alice", "Varsoon"));
+            Assert.False(cfg.IsBlacklisted("Menludiir", "Varsoon"));
+        }
+
+        [Fact]
+        public void IsBlacklisted_LegacyListStillHonouredAtQueryTime()
+        {
+            // A config constructed in memory (no Load → no migration)
+            // with the legacy property must still produce correct
+            // matches — preserves backward compat for code paths that
+            // never go through Save/Load.
+            var cfg = new PluginConfig { BlacklistedCharacters = new List<string> { "Menludiir" } };
+            Assert.True(cfg.IsBlacklisted("Menludiir", "Varsoon"));
+            Assert.True(cfg.IsBlacklisted("Menludiir", "Wuoshi"));
+            Assert.True(cfg.IsBlacklisted("MENLUDIIR", ""));
+        }
+
+        // ── Legacy blacklist migration on Load ─────────────────────────────
+
+        [Fact]
+        public void Load_MigratesLegacyBlacklistIntoEntriesWithAnyServer()
+        {
+            // v0.1.13 config file format on disk — legacy names, no
+            // structured entries. After Load(), the legacy list should
+            // be empty and BlacklistedEntries should hold the same
+            // names as any-server entries.
+            var tmp = Path.GetTempFileName();
+            try
+            {
+                var legacyCfg = new PluginConfig
+                {
+                    BlacklistedCharacters = new List<string> { "Menludiir", "Sihtric" },
+                };
+                legacyCfg.Save(tmp);
+
+                var loaded = PluginConfig.Load(tmp);
+                Assert.Empty(loaded.BlacklistedCharacters);
+                Assert.Equal(2, loaded.BlacklistedEntries.Count);
+                Assert.Contains(loaded.BlacklistedEntries, e =>
+                    e.Character == "Menludiir" && e.Server == "");
+                Assert.Contains(loaded.BlacklistedEntries, e =>
+                    e.Character == "Sihtric" && e.Server == "");
+            }
+            finally
+            {
+                File.Delete(tmp);
+            }
+        }
+
+        [Fact]
+        public void Load_LegacyMigrationDoesNotDuplicateExistingEntries()
+        {
+            // A config that already has BlacklistedEntries for some
+            // names + legacy entries for the same names should NOT
+            // end up with two entries per name.
+            var tmp = Path.GetTempFileName();
+            try
+            {
+                var cfg = new PluginConfig
+                {
+                    BlacklistedEntries = new List<BlacklistedEntry>
+                    {
+                        new BlacklistedEntry { Character = "Menludiir", Server = "" },
+                    },
+                    BlacklistedCharacters = new List<string> { "Menludiir", "Sihtric" },
+                };
+                cfg.Save(tmp);
+
+                var loaded = PluginConfig.Load(tmp);
+                Assert.Empty(loaded.BlacklistedCharacters);
+                // Menludiir already had an any-server entry → not
+                // duplicated. Sihtric was new → added.
+                Assert.Equal(2, loaded.BlacklistedEntries.Count);
+                Assert.Equal(1, loaded.BlacklistedEntries.Count(e =>
+                    string.Equals(e.Character, "Menludiir", StringComparison.OrdinalIgnoreCase)));
+            }
+            finally
+            {
+                File.Delete(tmp);
+            }
+        }
+
+        [Fact]
+        public void MigrateLegacyBlacklist_IsIdempotent()
+        {
+            // Run twice → same result as once. Protects against a
+            // future caller that re-invokes the migration after the
+            // first one already ran.
+            var cfg = new PluginConfig
+            {
+                BlacklistedCharacters = new List<string> { "Menludiir" },
+            };
+            cfg.MigrateLegacyBlacklist();
+            cfg.MigrateLegacyBlacklist();
+            Assert.Empty(cfg.BlacklistedCharacters);
+            Assert.Single(cfg.BlacklistedEntries);
         }
 
         // ── XML serialization roundtrip ────────────────────────────────────
@@ -176,7 +318,11 @@ namespace EQ2Lexicon.ACTPlugin.Tests
                 ServerUrl = "https://example.test",
                 ApiToken = "eq2c_secret_token",
                 UploadEnabled = true,
-                BlacklistedCharacters = new List<string> { "Alt1", "Alt2" },
+                BlacklistedEntries = new List<BlacklistedEntry>
+                {
+                    new BlacklistedEntry { Character = "Alt1", Server = "Varsoon" },
+                    new BlacklistedEntry { Character = "Alt2", Server = "" },
+                },
             };
 
             PluginConfig deserialized;
@@ -191,7 +337,12 @@ namespace EQ2Lexicon.ACTPlugin.Tests
             Assert.Equal(original.ServerUrl, deserialized.ServerUrl);
             Assert.Equal(original.ApiToken, deserialized.ApiToken);
             Assert.Equal(original.UploadEnabled, deserialized.UploadEnabled);
-            Assert.Equal(original.BlacklistedCharacters, deserialized.BlacklistedCharacters);
+            Assert.Equal(original.BlacklistedEntries.Count, deserialized.BlacklistedEntries.Count);
+            for (int i = 0; i < original.BlacklistedEntries.Count; i++)
+            {
+                Assert.Equal(original.BlacklistedEntries[i].Character, deserialized.BlacklistedEntries[i].Character);
+                Assert.Equal(original.BlacklistedEntries[i].Server, deserialized.BlacklistedEntries[i].Server);
+            }
         }
 
         [Fact]
@@ -208,6 +359,8 @@ namespace EQ2Lexicon.ACTPlugin.Tests
             }
             Assert.NotNull(deserialized.BlacklistedCharacters);
             Assert.Empty(deserialized.BlacklistedCharacters);
+            Assert.NotNull(deserialized.BlacklistedEntries);
+            Assert.Empty(deserialized.BlacklistedEntries);
         }
 
         // ── DPAPI token encryption ─────────────────────────────────────────

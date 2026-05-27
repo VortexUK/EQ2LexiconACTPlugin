@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -21,6 +22,26 @@ namespace EQ2Lexicon.ACTPlugin
         private EncounterCapture? _capture;
         private UploadClient? _uploadClient;
         private ActMenuExtension? _menuExtension;
+        private EventLog? _eventLog;
+
+        // Transient — never persisted. True only after a successful
+        // whoami round-trip that reported is_admin:true. Fail-CLOSED:
+        // any error (no token, offline, old server without the field)
+        // leaves this false, which keeps the Server URL field locked
+        // in the settings panel. The whoami call is fired
+        // opportunistically on startup (if a token exists) and
+        // refreshed on every Test Connection / Save click.
+        private bool _isAdmin;
+
+        // EQ2 servers the user is allowed to upload parses from. The
+        // canonical list comes from the whoami response's
+        // `allowed_servers` field. Until the server starts returning
+        // it (see CLAUDE.md — required server-side changes), we fall
+        // back to the two active English-language EQ2 TLE servers as
+        // of 2026 so the UI never shows an empty list.
+        private static readonly IReadOnlyList<string> DefaultAllowedServers =
+            new[] { "Varsoon", "Wuoshi" };
+        private IReadOnlyList<string> _allowedServers = DefaultAllowedServers;
 
         public void InitPlugin(TabPage pluginScreenSpace, Label pluginStatusText)
         {
@@ -46,7 +67,14 @@ namespace EQ2Lexicon.ACTPlugin
             }
 
             _uploadClient = new UploadClient();
-            _settingsPanel = new SettingsPanel(_config, OnConfigSaved, _uploadClient);
+
+            // One log instance per plugin lifetime; the settings panel
+            // takes a reference and renders its entries. Forwarded
+            // event sources are wired below.
+            _eventLog = new EventLog();
+            _uploadClient.RequestCompleted += OnHttpRequestCompleted;
+
+            _settingsPanel = new SettingsPanel(_config, OnConfigSaved, _uploadClient, _eventLog);
             _settingsPanel.OnInstallUpdateClicked = BeginAutoUpdateAsync;
             _pluginTab.Controls.Add(_settingsPanel);
 
@@ -57,7 +85,10 @@ namespace EQ2Lexicon.ACTPlugin
             _settingsPanel.GetLastCapturedPayloadJson = () => _capture?.LastCapturedPayloadJson ?? "";
             _capture.OnCaptured += OnEncounterCaptured;
             _capture.OnSkipped += reason =>
+            {
                 _settingsPanel?.SetUploadStatus(reason, success: false);
+                _eventLog?.Log(EventSeverity.Warning, "capture", "skipped: " + reason);
+            };
 
             // Right-click "Upload to EQ2 Lexicon" on ACT's encounter
             // tree. Attaches 5s later — controls aren't built yet.
@@ -65,10 +96,26 @@ namespace EQ2Lexicon.ACTPlugin
 
             UpdateStatusFromConfig();
 
+            // Seed the allowed-servers card with the defaults before
+            // whoami completes — beats showing an empty list during
+            // the brief window between plugin init and the first
+            // round-trip to the server.
+            _settingsPanel.SetAllowedServers(_allowedServers);
+
+            _eventLog.Log(EventSeverity.Info, "plugin",
+                $"EQ2 Lexicon plugin v{UpdateChecker.GetCurrentAssemblyVersion().ToString(3)} loaded.");
+
             // Fire-and-forget update check. Fails open: any error
             // (offline, GitHub 5xx, rate-limit) leaves UpdateStatus null,
             // which UploadClient interprets as "don't gate".
             _ = Task.Run(CheckForUpdatesAsync);
+
+            // Opportunistic whoami so the URL-edit gate has an answer
+            // without the user having to click Test Connection first.
+            // Fails CLOSED — no token, network down, old server with
+            // no is_admin field → field stays locked. Runs after the
+            // settings panel exists so we can push the result to it.
+            _ = Task.Run(RefreshAdminStateAsync);
         }
 
         /// <summary>
@@ -178,14 +225,90 @@ namespace EQ2Lexicon.ACTPlugin
 
         public void DeInitPlugin()
         {
+            // Unsubscribe BEFORE disposing so a request completing
+            // mid-shutdown can't fire into a half-disposed handler.
+            if (_uploadClient != null)
+            {
+                _uploadClient.RequestCompleted -= OnHttpRequestCompleted;
+            }
             _menuExtension?.Dispose();
             _menuExtension = null;
             _capture?.Dispose();
             _capture = null;
             _uploadClient?.Dispose();
             _uploadClient = null;
+            _eventLog = null;
             _pluginTab?.Controls.Clear();
             SetStatus("EQ2 Lexicon: unloaded");
+        }
+
+        /// <summary>
+        /// Run a whoami call with the current saved token (no UI
+        /// state — uses the on-disk config, not the in-progress
+        /// edit). Cache the resulting admin flag and push it to the
+        /// settings panel so the URL-field gate updates without
+        /// waiting for the user to click Test Connection.
+        ///
+        /// Fail-CLOSED at every branch: empty token / invalid URL /
+        /// network error / non-admin → _isAdmin stays false (URL
+        /// locked). Only a successful whoami that reports
+        /// is_admin:true flips it.
+        /// </summary>
+        private async Task RefreshAdminStateAsync()
+        {
+            if (_uploadClient == null || _settingsPanel == null || _config == null) return;
+            if (string.IsNullOrWhiteSpace(_config.ApiToken)) return;
+
+            try
+            {
+                var result = await _uploadClient
+                    .TestConnectionAsync(_config.ServerUrl, _config.ApiToken)
+                    .ConfigureAwait(false);
+                _isAdmin = result.Success && result.IsAdmin;
+                _settingsPanel.SetAdminState(_isAdmin);
+
+                // If the server returned an allowed_servers list, use
+                // it; otherwise keep the built-in default. We never
+                // *replace* the displayed list with an empty one on
+                // failure — better UX to show the defaults than a
+                // blank card.
+                if (result.Success && result.AllowedServers != null && result.AllowedServers.Count > 0)
+                {
+                    _allowedServers = result.AllowedServers;
+                    _settingsPanel.SetAllowedServers(_allowedServers);
+                    _eventLog?.Log(EventSeverity.Info, "auth",
+                        $"allowed servers from site: {string.Join(", ", _allowedServers)}");
+                }
+
+                _eventLog?.Log(
+                    EventSeverity.Info,
+                    "auth",
+                    _isAdmin
+                        ? "admin authenticated — Server URL is editable"
+                        : "non-admin (Server URL locked)");
+            }
+            catch
+            {
+                // TestConnectionAsync wraps the expected exception
+                // types into a Result, but belt-and-brace.
+            }
+        }
+
+        /// <summary>
+        /// Forward an UploadClient HTTP exchange to the event log.
+        /// Anonymised payload — verb, URL, status code, duration ms,
+        /// success bool, ~200-char response excerpt. Bearer token
+        /// lives in headers and is never on this path; payload body
+        /// (encounter JSON) is excluded by UploadClient.
+        /// </summary>
+        private void OnHttpRequestCompleted(HttpExchangeInfo info)
+        {
+            if (_eventLog == null) return;
+            var sev = info.Success ? EventSeverity.Success : EventSeverity.Error;
+            var msg = info.StatusCode > 0
+                ? $"{info.Verb} {info.Url} → {info.StatusCode} ({info.DurationMs} ms)"
+                : $"{info.Verb} {info.Url} → failed ({info.DurationMs} ms): {info.ResponseExcerpt}";
+            _eventLog.Log(sev, "http", msg);
         }
 
         // -------------------------------------------------------------------
@@ -200,6 +323,12 @@ namespace EQ2Lexicon.ACTPlugin
             config.Save(_configPath);
             _config = config;
             UpdateStatusFromConfig();
+            _eventLog?.Log(EventSeverity.Info, "config", "settings saved");
+
+            // Token / URL may have changed — re-check admin state in
+            // the background. Don't block Save; the user's URL field
+            // updates a moment later when the response lands.
+            _ = Task.Run(RefreshAdminStateAsync);
         }
 
         /// <summary>
@@ -228,9 +357,9 @@ namespace EQ2Lexicon.ACTPlugin
             // enable computation.
             if (EncounterZone.IsImportOrMerge(enc.ZoneName))
             {
-                _settingsPanel.SetUploadStatus(
-                    "manual upload skipped (Import/Merge zone — customised parses can't be uploaded)",
-                    success: false);
+                const string msg = "manual upload skipped (Import/Merge zone — customised parses can't be uploaded)";
+                _settingsPanel.SetUploadStatus(msg, success: false);
+                _eventLog?.Log(EventSeverity.Warning, "upload", msg);
                 return;
             }
 
@@ -239,16 +368,16 @@ namespace EQ2Lexicon.ACTPlugin
             // message tells the user how to fix it themselves.
             if (EncounterTitle.IsPlaceholder(enc.Title))
             {
-                _settingsPanel.SetUploadStatus(
-                    $"manual upload skipped (title is '{enc.Title}' — rename it in ACT first)",
-                    success: false);
+                var msg = $"manual upload skipped (title is '{enc.Title}' — rename it in ACT first)";
+                _settingsPanel.SetUploadStatus(msg, success: false);
+                _eventLog?.Log(EventSeverity.Warning, "upload", msg);
                 return;
             }
             if (string.IsNullOrWhiteSpace(_config.ApiToken))
             {
-                _settingsPanel.SetUploadStatus(
-                    "manual upload skipped (API token not configured)",
-                    success: false);
+                const string msg = "manual upload skipped (API token not configured)";
+                _settingsPanel.SetUploadStatus(msg, success: false);
+                _eventLog?.Log(EventSeverity.Warning, "upload", msg);
                 return;
             }
 
@@ -271,15 +400,17 @@ namespace EQ2Lexicon.ACTPlugin
             }
             catch (Exception ex)
             {
-                _settingsPanel.SetUploadStatus(
-                    "manual upload failed (snapshot error): " + ex.Message,
-                    success: false);
+                var msg = "manual upload failed (snapshot error): " + ex.Message;
+                _settingsPanel.SetUploadStatus(msg, success: false);
+                _eventLog?.Log(EventSeverity.Error, "upload", msg);
                 return;
             }
 
             var url = _config.ServerUrl;
             var token = _config.ApiToken;
-            _settingsPanel.SetUploadStatus($"manual upload starting ({title})…", success: true);
+            var startMsg = $"manual upload starting ({title})…";
+            _settingsPanel.SetUploadStatus(startMsg, success: true);
+            _eventLog?.Log(EventSeverity.Info, "upload", startMsg);
 
             _ = Task.Run(async () =>
             {
@@ -289,12 +420,16 @@ namespace EQ2Lexicon.ACTPlugin
                     _settingsPanel?.SetUploadStatus(
                         "manual: " + result.Message,
                         result.Success);
+                    _eventLog?.Log(
+                        result.Success ? EventSeverity.Success : EventSeverity.Error,
+                        "upload",
+                        "manual: " + result.Message);
                 }
                 catch (Exception ex)
                 {
-                    _settingsPanel?.SetUploadStatus(
-                        "manual upload error: " + ex.Message,
-                        success: false);
+                    var msg = "manual upload error: " + ex.Message;
+                    _settingsPanel?.SetUploadStatus(msg, success: false);
+                    _eventLog?.Log(EventSeverity.Error, "upload", msg);
                 }
             });
         }
@@ -309,19 +444,31 @@ namespace EQ2Lexicon.ACTPlugin
                 _capture.LastCombatantCount,
                 _capture.LastAttackTypeCount);
 
+            _eventLog?.Log(
+                EventSeverity.Success,
+                "capture",
+                $"captured \"{_capture.LastCapturedTitle}\" ({_capture.LastCombatantCount} combatants)");
+
             // Decide whether to upload. Skip reasons get surfaced in the
             // settings panel so the user knows nothing was sent (and why).
             if (_config == null || _uploadClient == null) return;
 
             if (!_config.UploadEnabled)
             {
-                _settingsPanel.SetUploadStatus("skipped (uploads disabled)", success: false);
+                const string msg = "skipped (uploads disabled)";
+                _settingsPanel.SetUploadStatus(msg, success: false);
+                _eventLog?.Log(EventSeverity.Warning, "upload", msg);
                 return;
             }
             var charName = ActHelpers.GetLoggingCharacterName();
-            if (!string.IsNullOrWhiteSpace(charName) && _config.IsBlacklisted(charName))
+            var serverName = ActHelpers.GetLoggingServerName();
+            if (!string.IsNullOrWhiteSpace(charName) && _config.IsBlacklisted(charName, serverName))
             {
-                _settingsPanel.SetUploadStatus($"skipped ({charName} is blacklisted)", success: false);
+                var msg = string.IsNullOrWhiteSpace(serverName)
+                    ? $"skipped ({charName} is blacklisted)"
+                    : $"skipped ({charName} on {serverName} is blacklisted)";
+                _settingsPanel.SetUploadStatus(msg, success: false);
+                _eventLog?.Log(EventSeverity.Warning, "upload", msg);
                 return;
             }
 
@@ -330,7 +477,9 @@ namespace EQ2Lexicon.ACTPlugin
             var json = _capture.LastCapturedPayloadJson;
             if (string.IsNullOrEmpty(json))
             {
-                _settingsPanel.SetUploadStatus("skipped (no payload built)", success: false);
+                const string msg = "skipped (no payload built)";
+                _settingsPanel.SetUploadStatus(msg, success: false);
+                _eventLog?.Log(EventSeverity.Warning, "upload", msg);
                 return;
             }
 
@@ -342,10 +491,15 @@ namespace EQ2Lexicon.ACTPlugin
                 {
                     var result = await _uploadClient.UploadEncounterAsync(url, token, json);
                     _settingsPanel?.SetUploadStatus(result.Message, result.Success);
+                    _eventLog?.Log(
+                        result.Success ? EventSeverity.Success : EventSeverity.Error,
+                        "upload",
+                        result.Message);
                 }
                 catch (Exception ex)
                 {
                     _settingsPanel?.SetUploadStatus("error: " + ex.Message, success: false);
+                    _eventLog?.Log(EventSeverity.Error, "upload", "error: " + ex.Message);
                 }
             });
         }
@@ -371,7 +525,8 @@ namespace EQ2Lexicon.ACTPlugin
             // If the current logging character is on the blacklist, surface
             // that prominently — easy to miss otherwise.
             var charName = ActHelpers.GetLoggingCharacterName();
-            if (!string.IsNullOrWhiteSpace(charName) && _config.IsBlacklisted(charName))
+            var serverName = ActHelpers.GetLoggingServerName();
+            if (!string.IsNullOrWhiteSpace(charName) && _config.IsBlacklisted(charName, serverName))
             {
                 SetStatus($"EQ2 Lexicon: {charName} is blacklisted — uploads skipped");
                 return;
