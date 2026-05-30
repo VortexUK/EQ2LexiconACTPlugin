@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace EQ2Lexicon.ACTPlugin
 {
@@ -33,6 +34,59 @@ namespace EQ2Lexicon.ACTPlugin
             var t = title.Trim();
             return string.Equals(t, "Encounter", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(t, "Unknown", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// True when <paramref name="title"/> appears as (or within) one
+        /// of the supplied enemy combatant names. The expected guarantee
+        /// is that ACT's auto-derived title for an encounter is always
+        /// the name of an enemy that was actually fought — so a title
+        /// that matches NO enemy is a strong signal the user manually
+        /// renamed the encounter via right-click → Rename Encounter in
+        /// ACT.
+        ///
+        /// Confirmed empirically (the diagnostic-dump session that led
+        /// to this code) that ACT preserves no original-title shadow,
+        /// no `Tags` marker, and no `HistoryRecord` audit field — every
+        /// title-bearing property mutates with the rename. The
+        /// combatant-list cross-check is the only signal we have.
+        ///
+        /// Matching is permissive in both directions to handle EQ2's
+        /// "Boss the Epithet" mob naming style:
+        ///   * exact (case-insensitive): "Pawbuster" == "Pawbuster"
+        ///   * title-is-substring-of-enemy: title "Pawbuster" matches
+        ///     enemy "Pawbuster the Crusher"
+        ///   * enemy-is-substring-of-title: title "Pawbuster (Wipe 1)"
+        ///     matches enemy "Pawbuster"
+        ///
+        /// Both directions are needed because:
+        ///   * ACT sometimes uses the short form ("Pawbuster") even
+        ///     when the EQ2 log gives the full epithet,
+        ///   * and a legitimate user note appended to the title
+        ///     ("Pawbuster - take 2") shouldn't trip the filter.
+        ///
+        /// Returns false when the title is null/whitespace, or when
+        /// <paramref name="enemyNames"/> is empty (no enemies = nothing
+        /// to compare against, treat as suspect).
+        ///
+        /// Whitespace at the edges is trimmed on both sides before
+        /// comparing — copy-pasted-with-trailing-space titles shouldn't
+        /// false-positive.
+        /// </summary>
+        public static bool MatchesAnEnemy(string? title, IEnumerable<string?>? enemyNames)
+        {
+            if (string.IsNullOrWhiteSpace(title)) return false;
+            if (enemyNames == null) return false;
+            var t = title.Trim();
+            foreach (var name in enemyNames)
+            {
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                var n = name.Trim();
+                if (n.Equals(t, StringComparison.OrdinalIgnoreCase)) return true;
+                if (n.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                if (t.IndexOf(n, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            }
+            return false;
         }
     }
 }

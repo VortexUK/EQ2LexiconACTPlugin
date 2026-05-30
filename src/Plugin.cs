@@ -391,6 +391,26 @@ namespace EQ2Lexicon.ACTPlugin
             {
                 var snapshot = EncounterCapture.CaptureSnapshot(enc);
                 title = snapshot.Title;
+
+                // Rename-detection gate — mirrors the polling path.
+                // ACT's right-click → Rename Encounter mutates Title
+                // with no audit trail, so a title that doesn't appear
+                // in any enemy combatant is the only signal we have
+                // that the user retitled the fight. Block here too:
+                // the manual upload path skips the blacklist + the
+                // upload-enabled toggle, but a deliberate rename is
+                // a different category — clearly the user typed
+                // something, and uploading it would mislabel the parse
+                // on the site.
+                var enemyNames = EncounterCapture.EnumerateEnemyNames(snapshot);
+                if (!EncounterTitle.MatchesAnEnemy(title, enemyNames))
+                {
+                    var msg = $"manual upload skipped (title '{title}' doesn't match any enemy — looks renamed in ACT)";
+                    _settingsPanel.SetUploadStatus(msg, success: false);
+                    _eventLog?.Log(EventSeverity.Warning, "upload", msg);
+                    return;
+                }
+
                 var payload = PayloadBuilder.BuildPayload(
                     ActHelpers.GetLoggingCharacterName(),
                     ActHelpers.GetLoggingServerName(),

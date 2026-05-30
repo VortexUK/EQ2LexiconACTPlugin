@@ -209,12 +209,53 @@ namespace EQ2Lexicon.ACTPlugin
         // exercise it without ACT installed. Both the polling path
         // above and Plugin.OnManualUploadRequested call into it.
 
+        /// <summary>
+        /// Yields every combatant name in <paramref name="snap"/> that
+        /// isn't in AllyNames — i.e. the enemies fought during the
+        /// encounter. Used by the rename-detection gate (both auto and
+        /// manual paths) to cross-reference the title against actual
+        /// participants. Lives here rather than in Core because the
+        /// snapshot DTO already lives in Core and we want a single
+        /// canonical enemy filter that both call sites share.
+        /// </summary>
+        public static IEnumerable<string> EnumerateEnemyNames(EncounterSnapshot snap)
+        {
+            if (snap?.Combatants == null) yield break;
+            foreach (var c in snap.Combatants)
+            {
+                if (c == null) continue;
+                if (string.IsNullOrWhiteSpace(c.Name)) continue;
+                if (snap.AllyNames != null && snap.AllyNames.Contains(c.Name)) continue;
+                yield return c.Name;
+            }
+        }
+
         private void ProcessEncounter(EncounterData enc, string encid)
         {
             // Snapshot the ACT state THEN build the payload — keeps the
             // ACT-coupled extraction separate from the pure transformation
             // so the latter is unit-testable.
             var snapshot = CaptureSnapshot(enc);
+
+            // Rename-detection gate: ACT's right-click → Rename Encounter
+            // mutates EncounterData.Title with no audit trail (no
+            // OldTitle, no Tags marker, no HistoryRecord original —
+            // confirmed empirically via reflection dump). A title that
+            // doesn't appear in any enemy combatant's name is a strong
+            // signal someone retitled the fight, and uploading it would
+            // pollute the boss rankings on the site. The check lives
+            // here (not Poll) because it needs the snapshot's
+            // AllyNames set to identify enemies. See
+            // EncounterTitle.MatchesAnEnemy for the matching rules.
+            var enemyNames = EnumerateEnemyNames(snapshot);
+            if (!EncounterTitle.MatchesAnEnemy(snapshot.Title, enemyNames))
+            {
+                MarkProcessedNoCapture(encid);
+                OnSkipped?.Invoke(
+                    $"skipped ({encid}: title '{snapshot.Title}' doesn't match any enemy — was this fight renamed in ACT?)");
+                return;
+            }
+
             var payload = PayloadBuilder.BuildPayload(
                 ActHelpers.GetLoggingCharacterName(),
                 ActHelpers.GetLoggingServerName(),
