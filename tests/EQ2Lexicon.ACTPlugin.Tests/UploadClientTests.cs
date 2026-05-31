@@ -84,6 +84,61 @@ namespace EQ2Lexicon.ACTPlugin.Tests
         }
 
 
+        // ── ReportTamperAsync — validation gates ───────────────────────────
+        //
+        // ReportTamperAsync is the channel the rename-detection gate
+        // uses to ship the suspect payload to the server for the
+        // admin audit trail. The HTTP send path isn't directly tested
+        // (no in-process listener in this project) but the validation
+        // gates that short-circuit BEFORE any socket is opened are.
+        // Critical because a tampering user could otherwise trigger
+        // unexpected behaviour by setting a malformed token/URL on
+        // disk and waiting for the gate to fire.
+
+        [Fact]
+        public async System.Threading.Tasks.Task ReportTamperAsync_RejectsEmptyToken()
+        {
+            using var client = new UploadClient();
+            var result = await client.ReportTamperAsync(
+                "https://example.test", "", "{\"foo\":1}", "title_enemy_mismatch");
+            Assert.False(result.Success);
+            Assert.Contains("token", result.Message, System.StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public async System.Threading.Tasks.Task ReportTamperAsync_RejectsEmptyPayload()
+        {
+            using var client = new UploadClient();
+            var result = await client.ReportTamperAsync(
+                "https://example.test", "sometoken", "", "title_enemy_mismatch");
+            Assert.False(result.Success);
+            Assert.Contains("payload", result.Message, System.StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public async System.Threading.Tasks.Task ReportTamperAsync_RejectsBadUrl()
+        {
+            // file://, javascript:, ftp:// — all the schemes that
+            // could either leak the token or feed garbage to HttpClient.
+            // ValidateServerUrl rejects them, ReportTamperAsync inherits
+            // that gate.
+            using var client = new UploadClient();
+            var result = await client.ReportTamperAsync(
+                "file:///c:/passwd", "sometoken", "{\"foo\":1}", "x");
+            Assert.False(result.Success);
+        }
+
+        [Fact]
+        public void TamperReasonHeaderName_IsPinned()
+        {
+            // Server-side admin tooling reads this header to learn
+            // which heuristic fired without parsing the body. Pin
+            // the literal so a thoughtless rename here doesn't break
+            // server-side log filters or admin dashboards.
+            Assert.Equal("X-Lexicon-Tamper-Reason", UploadClient.TamperReasonHeaderName);
+        }
+
+
         // ── ExtractJsonString ──────────────────────────────────────────────
         // Minimal JSON string-field extractor used to pluck "detail" out of
         // FastAPI error bodies and "status" out of success bodies. NOT a

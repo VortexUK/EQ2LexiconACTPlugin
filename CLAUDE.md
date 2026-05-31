@@ -155,6 +155,72 @@ When absent, the plugin uses a built-in default of `["Varsoon", "Wuoshi"]` (the 
 
 Future enforcement: the server should *also* validate `logger_server` on incoming uploads against the same list and reject mismatched uploads with a 403. The plugin's display is courtesy/transparency; the real gate is the server.
 
+### `client_warnings` on `/api/parses/ingest`
+
+Accept an optional `client_warnings: [string, ...]` field on incoming upload payloads. The plugin attaches it when it spots something that *looks* suspect but isn't worth blocking on its own — currently:
+
+- `"folder_hint_mismatch"` — `EncounterData.HistoryRecord.FolderHint` (ACT's per-encounter folder-of-origin tag) doesn't match the EQ2 server name derived from the active log path. Typical cause: user manually moved a downloaded log into `<install>/logs/<server>/` and pointed ACT at it. The log path now looks legitimate but ACT remembers the original folder. Not by itself proof of tampering (a user could be archiving + restoring their own logs) — but worth surfacing in admin tooling so a clustered pattern across uploads is visible.
+
+Server behaviour: persist the warnings alongside the parse, expose them in admin views, don't reject. Empty / absent field means no warnings — old plugin versions never emit this key.
+
+Note: rename detection (title doesn't match any enemy combatant) is intentionally NOT a `client_warnings` flag — it's a separate hard block + audit POST (see [Rename-detection](#rename-detection-v0115) below). `client_warnings` only carries soft warnings that ride along with successful leaderboard uploads.
+
+### `/api/parses/tamper-report` (POST)
+
+Audit endpoint for parses the plugin refused to send to the leaderboard. Accepts the same body shape as `/api/parses/ingest` (so server-side admin tooling reuses the existing parse-row reader) + two extra headers:
+
+- `Authorization: Bearer <token>` — same auth as ingest
+- `X-Lexicon-Tamper-Reason: <code>` — single reason code identifying which heuristic tripped (see codes below)
+- `X-Lexicon-Signature: <hmac>` — same HMAC scheme as ingest (HMAC-SHA256 of body keyed by API token)
+
+**Reason codes** emitted by the plugin:
+
+| Reason | What tripped | User-visible code |
+|---|---|---|
+| `title_enemy_mismatch` | Encounter title doesn't match any enemy combatant — heuristic for ACT's right-click → Rename Encounter | `E1001` |
+| `stale_encounter` | `(DateTime.Now - EndTime).TotalHours > 1` — fight ended hours-to-days ago, almost certainly an imported log file | `E1002` |
+| `recent_import_activity` | `ActGlobals.oFormActMain.ActiveControl` was an import-related control (name/type contains "Import") within the last 30 seconds | `E1002` |
+
+The auto path's pre-startup skip (encounter started >5min before plugin enabled) silently fires `stale_encounter` / `recent_import_activity` tamper reports alongside the existing skip, when applicable. A pre-startup encounter that's NOT stale and not flagged by the import watcher is treated as benign mid-session content — no tamper, just a quiet skip.
+
+Server behaviour: persist the payload to a separate audit table — **must not** appear on public leaderboards. Surface in admin views so the maintainer can see attempted uploads. Until the endpoint is deployed, the plugin treats `404` / `405` / `501` as success (opportunistic rollout — same pattern as `is_admin` and the HMAC header in v0.1.8).
+
+## Rename-detection (v0.1.15+)
+
+`EncounterTitle.MatchesAnEnemy(title, enemyNames)` — heuristic check fired by both the polling path (`EncounterCapture.ProcessEncounter`) and the manual right-click path (`Plugin.OnManualUploadRequested`). ACT's "Rename Encounter" mutates `EncounterData.Title` with **no audit trail** (no `OldTitle`, no `Tags` marker, no `HistoryRecord` original — confirmed empirically via reflection dump). The only signal we have that a title was hand-edited is that an auto-derived title always matches an actual enemy combatant; a rename usually doesn't.
+
+When the title doesn't match any enemy, the plugin does TWO things:
+
+1. **Block the leaderboard upload.** `OnSkipped` fires with the opaque code `E1001` (rather than the literal "title doesn't match any enemy") so a user who knows the heuristic can't trivially game it by renaming to one of the combatants' names. The maintainer recognises the code; users generally don't and will ask, which is the desired flow.
+2. **Fire the tamper-report POST.** The same payload that *would* have been uploaded to `/ingest` is POSTed to `/api/parses/tamper-report` instead — with the `X-Lexicon-Tamper-Reason: title_enemy_mismatch` header. Server stores it in a dedicated audit table; admin reviews. Fire-and-forget — a network failure or missing endpoint doesn't surface to the user (silent collection beats noisy failure when the user might be the cheater).
+
+Earlier v0.1.15-dev iterations either hard-skipped without notifying the server (no evidence trail), or sent the renamed parse through to leaderboards as a soft `client_warnings` entry (polluted the leaderboards). The two-channel design — hard block + parallel audit POST — keeps the leaderboards clean while preserving the evidence.
+
+Wiring: `EncounterCapture` raises `OnTamperDetected(TamperEvent)` carrying the serialised payload + reason; `Plugin.OnTamperDetected` fires `UploadClient.ReportTamperAsync` on a worker. The manual path in `Plugin.OnManualUploadRequested` does both inline (no event needed — Plugin already holds the UploadClient). Enemy enumeration lives on `EncounterSnapshot.EnumerateEnemyNames()` (Core) — `Combatants` minus `AllyNames` — so the heuristic stays unit-testable without ACT.
+
+## Import-detection (v0.1.15+)
+
+Two-tier detection for "user imported a saved log file rather than playing live", derived from a dump-and-compare investigation (live encounter side-by-side with an imported one — see commit history). The signal that *did* discriminate: every imported encounter had `(Now - EndTime) ≈ 6 days`, every live capture had `(Now - EndTime) ≈ 16 seconds`. Four orders of magnitude apart, so the gate is wide-margin-safe.
+
+**Tier 1 — wall-clock staleness.** `(DateTime.Now - enc.EndTime).TotalHours > 1` ⇒ `stale_encounter`. Catches every realistic import in one cheap check. Survives the edge case the previous attempts didn't — the user is actively playing EQ2 (so the log file mtime is fresh) AND importing at the same time (so the FolderHint matches the live server directory). The encounter's own EndTime, by contrast, is fixed in the imported log and can't be hidden.
+
+**Tier 2 — import-control watcher.** [src/ImportActivityWatcher.cs](src/ImportActivityWatcher.cs) probes `ActGlobals.oFormActMain.ActiveControl` every poll tick. Any control whose type-name OR `Name` property contains "Import" (substring, case-insensitive) stamps a timestamp. An encid first-seen within 30 seconds of that timestamp ⇒ `recent_import_activity`. Direct evidence of intent — the user is literally in ACT's import UI. Catches the case where someone imports a log from earlier today (so Tier 1 might not trip).
+
+`EncounterCapture.ClassifyImportTamper(enc, now)` checks Tier 1 first, then Tier 2; first match wins. Returns the reason string or null.
+
+**Where it fires**:
+- **Polling pre-startup branch** — when an encounter is skipped for being older than `InstanceStartGraceSeconds`, ALSO call `ClassifyImportTamper`. If it returns a reason, fire the tamper report alongside the skip. A non-tampered pre-startup encounter (e.g. user enabled plugin 2 minutes into a fight) skips silently as before.
+- **Polling post-startup tamper gate** — between the pre-startup branch and the placeholder check, runs the same classifier. Catches the corner case where the plugin has been running and the user imports something that lands with a fresh-looking StartTime. Blocks + tamper-reports + emits user code `E1002`.
+- **Manual upload path** in `Plugin.OnManualUploadRequested` — runs the classifier inline. Stale or import-activity ⇒ block with `E1002`; rename ⇒ block with `E1001`. Priority order: stale > recent-import > rename. Only one tamper report per blocked manual upload.
+
+**What the investigation also showed wouldn't work as the discriminator** (each defeated in the realistic concurrent-EQ2-running scenario):
+- Log file `LastWriteTimeUtc` staleness — fails because EQ2 is actively writing while user imports.
+- `HistoryRecord.FolderHint` mismatch vs `logger_server` — fails because import source was the EQ2 server log dir; both say "Varsoon".
+- Burst detection (>1 encid per tick) — only catches multi-encounter imports, useful as corroboration only.
+- `HistoryRecord.Type` — same value for live and imported in the data we sampled; not a discriminator.
+
+These are still in the code as corroborating signals (folder_hint_mismatch still rides along as a soft `client_warnings` flag, burst detection is dead code we should clean up next pass) but they're not on the critical path.
+
 ## Update awareness (v0.1.8+)
 
 The plugin fetches `https://api.github.com/repos/VortexUK/EQ2LexiconACTPlugin/releases` once per ACT session, compares the assembly version to the published tags, and:

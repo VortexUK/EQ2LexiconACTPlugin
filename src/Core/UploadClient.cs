@@ -358,6 +358,155 @@ namespace EQ2Lexicon.ACTPlugin
             }
         }
 
+        /// <summary>
+        /// Header that carries the tamper-detection reason on a
+        /// <see cref="ReportTamperAsync"/> request. Comma-separated
+        /// list of reason codes (currently only
+        /// <c>title_enemy_mismatch</c>). Sniffable on the server-side
+        /// access log without parsing the body — useful when the
+        /// tamper-report endpoint is being added in a follow-up
+        /// deployment.
+        /// </summary>
+        public const string TamperReasonHeaderName = "X-Lexicon-Tamper-Reason";
+
+        /// <summary>
+        /// POST /api/parses/tamper-report with the bearer token and
+        /// the captured JSON payload from a parse that the client
+        /// rejected as tampered (today: title doesn't match any
+        /// enemy combatant — a strong heuristic that the user
+        /// renamed the encounter in ACT before triggering the
+        /// upload).
+        ///
+        /// The payload is identical to what a normal /ingest would
+        /// have received — server-side admin tooling reuses the
+        /// same parsing/persisting code to show the admin exactly
+        /// what the user was attempting to claim. The leaderboards
+        /// never see this row; it lands in a separate audit table.
+        ///
+        /// Always fire-and-forget at the call site:
+        ///   * the user's parse is already skipped client-side, so
+        ///     a tamper-report failure doesn't change the outcome
+        ///   * 404/405 from servers that haven't deployed the
+        ///     endpoint yet should not crash or surface to the user
+        ///   * a network outage shouldn't leave the cheater able to
+        ///     deduce we tried to report them (silence is fine —
+        ///     they get E1001 in the local log regardless)
+        ///
+        /// Bearer + HMAC headers match <see cref="UploadEncounterAsync"/>
+        /// — same threat-model story as a regular upload.
+        /// </summary>
+        public async Task<Result> ReportTamperAsync(
+            string serverUrl,
+            string apiToken,
+            string payloadJson,
+            string reason)
+        {
+            var urlError = ValidateServerUrl(serverUrl);
+            if (urlError != null) return new Result { Message = urlError };
+            if (string.IsNullOrWhiteSpace(apiToken))
+                return new Result { Message = "API token is empty." };
+            if (string.IsNullOrWhiteSpace(payloadJson))
+                return new Result { Message = "Payload is empty." };
+            if (payloadJson.Length > MaxPayloadBytes)
+                return new Result
+                {
+                    Message = $"Payload too large ({payloadJson.Length} bytes; cap is {MaxPayloadBytes}).",
+                };
+            // Reason is fundamentally maintainer-controlled (the
+            // client decides which heuristic tripped) — sanitise
+            // anyway: strip CR/LF so a future bug can't header-
+            // inject. Cap at 200 chars so a hostile build can't
+            // smuggle a payload via this header either.
+            var safeReason = (reason ?? "").Replace("\r", "").Replace("\n", "");
+            if (safeReason.Length > 200) safeReason = safeReason.Substring(0, 200);
+
+            var url = serverUrl.TrimEnd('/') + "/api/parses/tamper-report";
+            var sw = Stopwatch.StartNew();
+
+            using (var req = new HttpRequestMessage(HttpMethod.Post, url))
+            {
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiToken);
+                if (safeReason.Length > 0)
+                {
+                    req.Headers.Add(TamperReasonHeaderName, safeReason);
+                }
+                req.Content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
+
+                try
+                {
+                    var signature = PayloadSigner.Sign(payloadJson, apiToken);
+                    req.Headers.Add(PayloadSigner.SignatureHeaderName, signature);
+                }
+                catch (ArgumentException)
+                {
+                    return new Result { Message = "Could not sign tamper report (token missing)." };
+                }
+
+                try
+                {
+                    using (var resp = await _http.SendAsync(req).ConfigureAwait(false))
+                    {
+                        var body = await ReadBodyUtf8Async(resp.Content).ConfigureAwait(false);
+                        sw.Stop();
+
+                        // Opportunistic rollout: 404/405 from a server
+                        // that hasn't deployed the endpoint yet is
+                        // expected and shouldn't be surfaced as a
+                        // failure. The plugin did its job by trying;
+                        // the rest is server-side.
+                        var status = (int)resp.StatusCode;
+                        if (status == 404 || status == 405 || status == 501)
+                        {
+                            RaiseRequestCompleted("POST", url, status, sw.ElapsedMilliseconds, true, "endpoint not deployed");
+                            return new Result
+                            {
+                                Success = true,
+                                StatusCode = status,
+                                Message = "Tamper-report endpoint not yet deployed (ignored).",
+                            };
+                        }
+                        if (!resp.IsSuccessStatusCode)
+                        {
+                            RaiseRequestCompleted("POST", url, status, sw.ElapsedMilliseconds, false, Truncate(body, 200));
+                            return new Result
+                            {
+                                Success = false,
+                                StatusCode = status,
+                                Message = $"Tamper report rejected: {status} {resp.StatusCode}",
+                                Body = Truncate(body, 500),
+                            };
+                        }
+                        RaiseRequestCompleted("POST", url, status, sw.ElapsedMilliseconds, true, Truncate(body, 200));
+                        return new Result
+                        {
+                            Success = true,
+                            StatusCode = status,
+                            Message = "Tamper report accepted.",
+                            Body = body,
+                        };
+                    }
+                }
+                catch (TaskCanceledException)
+                {
+                    sw.Stop();
+                    RaiseRequestCompleted("POST", url, 0, sw.ElapsedMilliseconds, false, "timeout");
+                    return new Result { Message = "Tamper report timed out." };
+                }
+                catch (HttpRequestException ex)
+                {
+                    sw.Stop();
+                    RaiseRequestCompleted("POST", url, 0, sw.ElapsedMilliseconds, false, "network error");
+                    return new Result { Message = "Network error: " + ex.Message };
+                }
+                catch (Exception ex)
+                {
+                    sw.Stop();
+                    RaiseRequestCompleted("POST", url, 0, sw.ElapsedMilliseconds, false, ex.GetType().Name);
+                    return new Result { Message = "Unexpected error: " + ex.Message };
+                }
+            }
+        }
+
         // -------------------------------------------------------------------
         // Tiny JSON string-field extractor — avoids pulling in a full JSON
         // parser just for one field. NOT a general-purpose JSON parser.

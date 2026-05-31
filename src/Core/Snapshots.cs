@@ -34,6 +34,49 @@ namespace EQ2Lexicon.ACTPlugin
         /// </summary>
         public HashSet<string> AllyNames { get; set; }
             = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// ACT's per-encounter <c>HistoryRecord.FolderHint</c> — the
+        /// folder name ACT remembered as the origin of the log lines
+        /// that built this encounter. For live tailing it's the EQ2
+        /// per-server log directory (e.g. "Varsoon"); for an imported
+        /// log it's wherever the user dragged it from (e.g. "Downloads").
+        ///
+        /// Captured here so <c>PayloadBuilder.BuildPayload</c> can
+        /// cross-reference it against the detected
+        /// <c>logger_server</c> and emit a soft <c>client_warnings</c>
+        /// entry when they disagree — the "log file was moved into the
+        /// EQ2 logs dir but originally came from somewhere else" case
+        /// that the Import/Merge zone check doesn't catch.
+        ///
+        /// Empty string when the field couldn't be read (ACT version
+        /// without HistoryRecord, reflection failure, etc.). Caller
+        /// treats empty as "no signal" — no warning is emitted.
+        /// </summary>
+        public string FolderHint { get; set; } = "";
+
+        /// <summary>
+        /// Yields every combatant name that isn't in <see cref="AllyNames"/>
+        /// — i.e. the enemies fought during this encounter. Used by
+        /// the rename-detection heuristic to cross-reference the
+        /// title against actual participants.
+        ///
+        /// Lives on the snapshot itself rather than on the ACT-coupled
+        /// capture layer so <see cref="PayloadBuilder.ComputeClientWarnings"/>
+        /// (which runs in Core and has no reference back into the UI
+        /// assembly) can call it too.
+        /// </summary>
+        public IEnumerable<string> EnumerateEnemyNames()
+        {
+            if (Combatants == null) yield break;
+            foreach (var c in Combatants)
+            {
+                if (c == null) continue;
+                if (string.IsNullOrWhiteSpace(c.Name)) continue;
+                if (AllyNames != null && AllyNames.Contains(c.Name)) continue;
+                yield return c.Name;
+            }
+        }
     }
 
     public sealed class CombatantSnapshot

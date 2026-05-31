@@ -6,6 +6,30 @@ using Advanced_Combat_Tracker;
 namespace EQ2Lexicon.ACTPlugin
 {
     /// <summary>
+    /// Payload-and-reason bundle raised by
+    /// <see cref="EncounterCapture.OnTamperDetected"/>. Carries the
+    /// serialized JSON payload (identical to what /ingest would have
+    /// received) and the heuristic that fired.
+    ///
+    /// Lives in the UI assembly rather than Core because its only
+    /// consumer is <see cref="Plugin"/>; pushing it down to Core would
+    /// just add a DTO file with no testable behaviour.
+    /// </summary>
+    internal sealed class TamperEvent
+    {
+        public string PayloadJson { get; }
+        public string Reason { get; }
+        public string EncId { get; }
+
+        public TamperEvent(string payloadJson, string reason, string encid)
+        {
+            PayloadJson = payloadJson ?? "";
+            Reason = reason ?? "";
+            EncId = encid ?? "";
+        }
+    }
+
+    /// <summary>
     /// Polls ACT's active zone every couple of seconds. When an encounter
     /// has settled (no EndTime updates for <see cref="SettleSeconds"/>),
     /// converts it into an <see cref="EncounterSnapshot"/> and hands it
@@ -62,6 +86,30 @@ namespace EQ2Lexicon.ACTPlugin
         // raid pull just because the plugin loaded 30s into it).
         private const double InstanceStartGraceSeconds = 300.0;
 
+        // Wall-clock-relative gate for "is this clearly imported rather
+        // than legitimately mid-session?". The pre-startup check above
+        // catches both cases identically; this additional check
+        // separates them. An encounter that ENDED more than this long
+        // ago is, in practice, an import — a real "user enabled plugin
+        // mid-session" encounter ended seconds-to-minutes before now.
+        // The investigation dump showed live captures with
+        // (Now-EndTime)=16s vs imports at (Now-EndTime)=547088s (6.3
+        // days). 1 hour is comfortably between the two extremes.
+        public const double StaleEncounterHours = 1.0;
+
+        // Owned by Plugin (via constructor injection) so the same
+        // instance can be queried by both the polling path and the
+        // manual right-click upload path. Probed once per poll tick
+        // here — no separate timer.
+        private readonly ImportActivityWatcher _importWatcher = new ImportActivityWatcher();
+
+        /// <summary>
+        /// Returns true if ACT's <c>ActiveControl</c> was an import-related
+        /// control within the last 30 seconds. Exposed so the manual
+        /// upload path in <see cref="Plugin"/> can apply the same check.
+        /// </summary>
+        public bool WasRecentImportActivity() => _importWatcher.WasRecentImportActivity();
+
         // Stamped once in the ctor — used to draw the "before me" line.
         // DateTime.Now (local) because every other timestamp from ACT in
         // this class is also local (StartTime/EndTime are ACT-emitted
@@ -87,6 +135,22 @@ namespace EQ2Lexicon.ACTPlugin
         /// </summary>
         public event Action<string>? OnSkipped;
 
+        /// <summary>
+        /// Raised when a captured encounter trips a tamper heuristic
+        /// (currently: title doesn't match any enemy combatant — the
+        /// rename-detection signal). Carries the full serialized
+        /// payload that the leaderboard ingest *would* have received,
+        /// plus a reason code, so Plugin can POST it to
+        /// <see cref="UploadClient.ReportTamperAsync"/> for the
+        /// audit trail. The encounter itself is NOT uploaded to the
+        /// regular ingest endpoint — <see cref="OnCaptured"/> does not
+        /// fire on this path.
+        ///
+        /// Fired on the same worker thread as the polling tick;
+        /// subscribers must not block.
+        /// </summary>
+        public event Action<TamperEvent>? OnTamperDetected;
+
         public EncounterCapture()
         {
             _timer = new Timer(_ => PollSafe(), null, _interval, _interval);
@@ -109,6 +173,13 @@ namespace EQ2Lexicon.ACTPlugin
 
         private void Poll()
         {
+            // Sample ACT's ActiveControl once per tick — cheap, and the
+            // window in which an import-related control is focused is
+            // typically several seconds (the user holds the import
+            // dialog open while ACT replays). One probe per 2s tick
+            // gives plenty of resolution.
+            _importWatcher.Probe();
+
             var zone = ActGlobals.oFormActMain?.ActiveZone;
             if (zone?.Items == null || zone.Items.Count == 0) return;
 
@@ -155,11 +226,42 @@ namespace EQ2Lexicon.ACTPlugin
                 // here), or they just imported a log file. Auto path
                 // skips; manual right-click upload still works as the
                 // escape hatch for "yes actually, please upload that".
+                //
+                // Additionally: if the encounter is wall-clock stale
+                // (>1h since EndTime) OR an import control was focused
+                // recently, it's almost certainly an import attempt
+                // rather than legitimate mid-session play. Fire a
+                // tamper report alongside the skip so the admin sees
+                // the audit trail. The skip itself still happens
+                // regardless (we never auto-upload pre-startup
+                // encounters), but only the import-flavoured ones are
+                // reported as tamper.
                 if (enc.StartTime < _instanceStartedAt.AddSeconds(-InstanceStartGraceSeconds))
                 {
                     MarkProcessedNoCapture(encid);
+                    var importReason = ClassifyImportTamper(enc, now);
+                    if (importReason != null)
+                    {
+                        FireTamperForEncounter(enc, encid, importReason);
+                    }
                     OnSkipped?.Invoke(
                         $"skipped ({encid}: started before plugin enabled — likely import or pre-existing)");
+                    continue;
+                }
+
+                // Post-startup tamper gate. Catches the case where the
+                // plugin has been running for hours, then the user
+                // imports a log whose encounters happen to land in
+                // this session's zone tree with recent StartTimes
+                // (rare, but possible if the user merges or
+                // re-stamps timestamps). Also catches "user clicked
+                // import in the last 30s, an encounter appeared".
+                var importReasonPost = ClassifyImportTamper(enc, now);
+                if (importReasonPost != null)
+                {
+                    MarkProcessedNoCapture(encid);
+                    FireTamperForEncounter(enc, encid, importReasonPost);
+                    OnSkipped?.Invoke($"skipped ({encid}: E1002)");
                     continue;
                 }
 
@@ -181,6 +283,60 @@ namespace EQ2Lexicon.ACTPlugin
                 }
 
                 ProcessEncounter(enc, encid);
+            }
+        }
+
+        /// <summary>
+        /// Decide whether <paramref name="enc"/> looks like an import
+        /// attempt, and return the reason code to attach to the tamper
+        /// report. Returns null when neither signal trips.
+        ///
+        /// Two checks, in priority order:
+        ///   1. <c>"stale_encounter"</c> — wall-clock age of EndTime
+        ///      exceeds <see cref="StaleEncounterHours"/>. The defining
+        ///      signal: live captures end seconds ago, imports end
+        ///      hours-to-days ago.
+        ///   2. <c>"recent_import_activity"</c> — the import-control
+        ///      watcher recorded a sighting in the last 30s.
+        ///      Corroborates Tier 1 and also catches the corner case
+        ///      where an imported log happens to be very recent (e.g.
+        ///      user imports a log from earlier today).
+        /// </summary>
+        private string? ClassifyImportTamper(EncounterData enc, DateTime now)
+        {
+            if ((now - enc.EndTime).TotalHours > StaleEncounterHours)
+                return "stale_encounter";
+            if (_importWatcher.WasRecentImportActivity())
+                return "recent_import_activity";
+            return null;
+        }
+
+        /// <summary>
+        /// Build the same JSON payload the leaderboard ingest path would
+        /// have produced, and raise <see cref="OnTamperDetected"/> with
+        /// it. Used by every tamper branch except rename (which already
+        /// has the payload in hand from the main pipeline). Swallows
+        /// every exception — tamper reporting is best-effort and must
+        /// never crash the capture path.
+        /// </summary>
+        private void FireTamperForEncounter(EncounterData enc, string encid, string reason)
+        {
+            try
+            {
+                var snapshot = CaptureSnapshot(enc);
+                var payload = PayloadBuilder.BuildPayload(
+                    ActHelpers.GetLoggingCharacterName(),
+                    ActHelpers.GetLoggingServerName(),
+                    snapshot);
+                PayloadBuilder.SanitizePayload(payload);
+                var json = PayloadBuilder.SerializeJson(payload);
+                OnTamperDetected?.Invoke(new TamperEvent(json, reason, encid));
+            }
+            catch
+            {
+                // Best-effort — don't crash on payload-build failure
+                // (e.g. an EncounterData whose Items dict mutated mid-
+                // snapshot). The skip itself has already happened.
             }
         }
 
@@ -210,23 +366,38 @@ namespace EQ2Lexicon.ACTPlugin
         // above and Plugin.OnManualUploadRequested call into it.
 
         /// <summary>
-        /// Yields every combatant name in <paramref name="snap"/> that
-        /// isn't in AllyNames — i.e. the enemies fought during the
-        /// encounter. Used by the rename-detection gate (both auto and
-        /// manual paths) to cross-reference the title against actual
-        /// participants. Lives here rather than in Core because the
-        /// snapshot DTO already lives in Core and we want a single
-        /// canonical enemy filter that both call sites share.
+        /// Read <c>enc.HistoryRecord.FolderHint</c> via reflection.
+        ///
+        /// ACT's <c>EncounterData.HistoryRecord</c> is undocumented
+        /// metadata that tags an encounter with the folder name ACT
+        /// associated its log lines with — live tailing stamps the
+        /// EQ2 per-server log directory (e.g. "Varsoon"); an imported
+        /// log stamps the source folder (e.g. "Downloads"). We want
+        /// the second value as a "flag on the play" when it diverges
+        /// from the active log path's parent server name, but the
+        /// property's presence/shape isn't part of ACT's stable
+        /// surface area — hence reflection rather than a direct ref
+        /// (a future ACT could rename or move the field without
+        /// breaking us).
+        ///
+        /// Returns "" when anything goes wrong — caller treats empty
+        /// as "no signal, don't warn" and the upload proceeds
+        /// unaffected.
         /// </summary>
-        public static IEnumerable<string> EnumerateEnemyNames(EncounterSnapshot snap)
+        private static string ReadFolderHint(EncounterData enc)
         {
-            if (snap?.Combatants == null) yield break;
-            foreach (var c in snap.Combatants)
+            try
             {
-                if (c == null) continue;
-                if (string.IsNullOrWhiteSpace(c.Name)) continue;
-                if (snap.AllyNames != null && snap.AllyNames.Contains(c.Name)) continue;
-                yield return c.Name;
+                var historyProp = enc.GetType().GetProperty("HistoryRecord");
+                var record = historyProp?.GetValue(enc, null);
+                if (record == null) return "";
+                var hintProp = record.GetType().GetProperty("FolderHint");
+                var value = hintProp?.GetValue(record, null) as string;
+                return value ?? "";
+            }
+            catch
+            {
+                return "";
             }
         }
 
@@ -237,31 +408,39 @@ namespace EQ2Lexicon.ACTPlugin
             // so the latter is unit-testable.
             var snapshot = CaptureSnapshot(enc);
 
-            // Rename-detection gate: ACT's right-click → Rename Encounter
-            // mutates EncounterData.Title with no audit trail (no
-            // OldTitle, no Tags marker, no HistoryRecord original —
-            // confirmed empirically via reflection dump). A title that
-            // doesn't appear in any enemy combatant's name is a strong
-            // signal someone retitled the fight, and uploading it would
-            // pollute the boss rankings on the site. The check lives
-            // here (not Poll) because it needs the snapshot's
-            // AllyNames set to identify enemies. See
-            // EncounterTitle.MatchesAnEnemy for the matching rules.
-            var enemyNames = EnumerateEnemyNames(snapshot);
-            if (!EncounterTitle.MatchesAnEnemy(snapshot.Title, enemyNames))
-            {
-                MarkProcessedNoCapture(encid);
-                OnSkipped?.Invoke(
-                    $"skipped ({encid}: title '{snapshot.Title}' doesn't match any enemy — was this fight renamed in ACT?)");
-                return;
-            }
-
+            // Build the payload before the rename gate so the tamper
+            // report (if it fires) has the same JSON shape the admin
+            // would see in a regular upload — server-side audit code
+            // can reuse the existing parse-row writer.
             var payload = PayloadBuilder.BuildPayload(
                 ActHelpers.GetLoggingCharacterName(),
                 ActHelpers.GetLoggingServerName(),
                 snapshot);
             PayloadBuilder.SanitizePayload(payload);
             var json = PayloadBuilder.SerializeJson(payload);
+
+            // Rename-detection gate: ACT's right-click → Rename Encounter
+            // mutates EncounterData.Title with no audit trail (confirmed
+            // empirically via reflection dump). A title that doesn't
+            // appear in any enemy combatant's name is the only signal
+            // we have that someone retitled the fight.
+            //
+            // When tripped: block the leaderboard upload (do NOT fire
+            // OnCaptured — the regular ingest path never sees this
+            // parse) and raise OnTamperDetected so Plugin can POST
+            // the payload to the dedicated tamper-report endpoint
+            // for the admin's evidence trail.
+            //
+            // User-visible message is the opaque code E1001 (rather
+            // than the literal "title doesn't match any enemy") so a
+            // user who knows the heuristic can't trivially game it.
+            if (!EncounterTitle.MatchesAnEnemy(snapshot.Title, snapshot.EnumerateEnemyNames()))
+            {
+                MarkProcessedNoCapture(encid);
+                OnTamperDetected?.Invoke(new TamperEvent(json, "title_enemy_mismatch", encid));
+                OnSkipped?.Invoke($"skipped ({encid}: E1001)");
+                return;
+            }
 
             lock (_lock)
             {
@@ -309,6 +488,7 @@ namespace EQ2Lexicon.ACTPlugin
                 AlliedKills = enc.AlliedKills,
                 AlliedDeaths = enc.AlliedDeaths,
                 SuccessLevel = enc.GetEncounterSuccessLevel(),
+                FolderHint = ReadFolderHint(enc),
             };
 
             // ACT's authoritative ally list (already pet-attributed by the

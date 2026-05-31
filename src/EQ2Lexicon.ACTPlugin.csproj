@@ -21,11 +21,19 @@
     <ActInstallDir Condition="'$(ActInstallDir)' == ''">$(ACT_INSTALL_DIR)</ActInstallDir>
     <ActInstallDir Condition="'$(ActInstallDir)' == ''">C:\Program Files (x86)\Advanced Combat Tracker</ActInstallDir>
 
-    <!-- Build metadata shown in ACT's plugin list -->
+    <!-- Build metadata shown in ACT's plugin list AND in the DLL's
+         Win32 version info block (right-click DLL → Properties → Details
+         in Explorer). Company is the maintainer's GitHub identity rather
+         than the project name so the attribution is unambiguous when the
+         DLL surfaces in security tooling or SmartScreen prompts.
+         Copyright is the generic redistribution notice — embedded font
+         licences (Cinzel SIL OFL) stay called out separately in
+         Resources/Fonts/OFL.txt. -->
     <Version>0.1.15</Version>
-    <Company>EQ2 Lexicon</Company>
+    <Company>VortexUK</Company>
     <Product>EQ2 Lexicon Uploader</Product>
     <Description>Uploads ACT-parsed encounters to the EQ2 Lexicon site.</Description>
+    <Copyright>Copyright © 2026 VortexUK</Copyright>
   </PropertyGroup>
 
   <!--

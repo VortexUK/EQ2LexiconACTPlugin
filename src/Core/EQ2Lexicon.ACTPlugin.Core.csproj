@@ -19,9 +19,10 @@
       version tracks the user-facing plugin version.
     -->
     <Version>0.1.15</Version>
-    <Company>EQ2 Lexicon</Company>
+    <Company>VortexUK</Company>
     <Product>EQ2 Lexicon Uploader (Core)</Product>
     <Description>Pure payload / config / HTTP layer shared by EQ2Lexicon.ACTPlugin.</Description>
+    <Copyright>Copyright © 2026 VortexUK</Copyright>
   </PropertyGroup>
 
   <ItemGroup>

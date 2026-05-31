@@ -89,6 +89,7 @@ namespace EQ2Lexicon.ACTPlugin
                 _settingsPanel?.SetUploadStatus(reason, success: false);
                 _eventLog?.Log(EventSeverity.Warning, "capture", "skipped: " + reason);
             };
+            _capture.OnTamperDetected += OnTamperDetected;
 
             // Right-click "Upload to EQ2 Lexicon" on ACT's encounter
             // tree. Attaches 5s later — controls aren't built yet.
@@ -231,6 +232,10 @@ namespace EQ2Lexicon.ACTPlugin
             {
                 _uploadClient.RequestCompleted -= OnHttpRequestCompleted;
             }
+            if (_capture != null)
+            {
+                _capture.OnTamperDetected -= OnTamperDetected;
+            }
             _menuExtension?.Dispose();
             _menuExtension = null;
             _capture?.Dispose();
@@ -311,6 +316,40 @@ namespace EQ2Lexicon.ACTPlugin
             _eventLog.Log(sev, "http", msg);
         }
 
+        /// <summary>
+        /// Fire-and-forget the tamper report. Runs on a worker; the
+        /// user has already seen "E1001" via OnSkipped and we don't
+        /// surface a separate status for this — the leaderboard
+        /// upload was skipped; this is purely server-side audit.
+        ///
+        /// All failure modes silently swallow:
+        ///   * 404/405/501 — endpoint not deployed yet (opportunistic
+        ///     rollout). UploadClient returns Success=true for these.
+        ///   * token missing — nothing we can sign with, skip.
+        ///   * network error — best-effort, no retry.
+        /// </summary>
+        private void OnTamperDetected(TamperEvent ev)
+        {
+            if (_config == null || _uploadClient == null) return;
+            if (string.IsNullOrWhiteSpace(_config.ApiToken)) return;
+            var url = _config.ServerUrl;
+            var token = _config.ApiToken;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _uploadClient
+                        .ReportTamperAsync(url, token, ev.PayloadJson, ev.Reason)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Best-effort — the parse is already blocked
+                    // client-side. Don't risk surfacing to the user.
+                }
+            });
+        }
+
         // -------------------------------------------------------------------
         // Helpers
         // -------------------------------------------------------------------
@@ -387,36 +426,41 @@ namespace EQ2Lexicon.ACTPlugin
             // construction.
             string json;
             string title;
+            string? tamperReason;
             try
             {
                 var snapshot = EncounterCapture.CaptureSnapshot(enc);
                 title = snapshot.Title;
 
-                // Rename-detection gate — mirrors the polling path.
-                // ACT's right-click → Rename Encounter mutates Title
-                // with no audit trail, so a title that doesn't appear
-                // in any enemy combatant is the only signal we have
-                // that the user retitled the fight. Block here too:
-                // the manual upload path skips the blacklist + the
-                // upload-enabled toggle, but a deliberate rename is
-                // a different category — clearly the user typed
-                // something, and uploading it would mislabel the parse
-                // on the site.
-                var enemyNames = EncounterCapture.EnumerateEnemyNames(snapshot);
-                if (!EncounterTitle.MatchesAnEnemy(title, enemyNames))
-                {
-                    var msg = $"manual upload skipped (title '{title}' doesn't match any enemy — looks renamed in ACT)";
-                    _settingsPanel.SetUploadStatus(msg, success: false);
-                    _eventLog?.Log(EventSeverity.Warning, "upload", msg);
-                    return;
-                }
-
+                // Build the payload first so both branches below have
+                // the same JSON to work with (regular upload OR tamper
+                // report — same wire shape on purpose).
                 var payload = PayloadBuilder.BuildPayload(
                     ActHelpers.GetLoggingCharacterName(),
                     ActHelpers.GetLoggingServerName(),
                     snapshot);
                 PayloadBuilder.SanitizePayload(payload);
                 json = PayloadBuilder.SerializeJson(payload);
+
+                // Decide which (if any) tamper reason applies. Priority
+                // mirrors the polling path:
+                //   * stale_encounter / recent_import_activity  → E1002
+                //   * title_enemy_mismatch (rename)             → E1001
+                // First match wins; we only fire one tamper report per
+                // blocked upload. Both block the leaderboard ingest.
+                tamperReason = null;
+                if ((DateTime.Now - enc.EndTime).TotalHours > EncounterCapture.StaleEncounterHours)
+                {
+                    tamperReason = "stale_encounter";
+                }
+                else if (_capture?.WasRecentImportActivity() == true)
+                {
+                    tamperReason = "recent_import_activity";
+                }
+                else if (!EncounterTitle.MatchesAnEnemy(title, snapshot.EnumerateEnemyNames()))
+                {
+                    tamperReason = "title_enemy_mismatch";
+                }
             }
             catch (Exception ex)
             {
@@ -428,6 +472,33 @@ namespace EQ2Lexicon.ACTPlugin
 
             var url = _config.ServerUrl;
             var token = _config.ApiToken;
+
+            if (tamperReason != null)
+            {
+                // E1001 for rename; E1002 for stale / recent-import.
+                // Opaque codes match the polling path's posture — the
+                // user (potentially the cheater) doesn't learn the
+                // specific heuristic that tripped.
+                var userCode = tamperReason == "title_enemy_mismatch" ? "E1001" : "E1002";
+                var msg = $"manual upload skipped ({userCode})";
+                _settingsPanel.SetUploadStatus(msg, success: false);
+                _eventLog?.Log(EventSeverity.Warning, "upload", msg);
+                // Fire-and-forget the tamper report. Server-side
+                // reason is the granular code.
+                var reason = tamperReason;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _uploadClient
+                            .ReportTamperAsync(url, token, json, reason)
+                            .ConfigureAwait(false);
+                    }
+                    catch { /* best-effort */ }
+                });
+                return;
+            }
+
             var startMsg = $"manual upload starting ({title})…";
             _settingsPanel.SetUploadStatus(startMsg, success: true);
             _eventLog?.Log(EventSeverity.Info, "upload", startMsg);
@@ -526,19 +597,27 @@ namespace EQ2Lexicon.ACTPlugin
 
         private void UpdateStatusFromConfig()
         {
+            // ACT renders the plugin status as a plain WinForms Label
+            // in its plugin list — we only get to set Text, so the
+            // "look" comes from Unicode glyphs that ship in the default
+            // Windows font. ✦ (filled six-pointed star, U+2726) for the
+            // happy path, ◇ (hollow diamond, U+25C7) for any paused or
+            // blocked state, separated from the descriptor by a middle
+            // dot. The brand line stays "EQ2 Lexicon" without a colon —
+            // colons read as "label:value" which fights the symbol.
             if (_config == null)
             {
-                SetStatus("EQ2 Lexicon: no config");
+                SetStatus("◇ EQ2 Lexicon · no config");
                 return;
             }
             if (string.IsNullOrEmpty(_config.ApiToken))
             {
-                SetStatus("EQ2 Lexicon: API token not set");
+                SetStatus("◇ EQ2 Lexicon · API token not set");
                 return;
             }
             if (!_config.UploadEnabled)
             {
-                SetStatus("EQ2 Lexicon: uploads disabled");
+                SetStatus("◇ EQ2 Lexicon · uploads disabled");
                 return;
             }
 
@@ -548,11 +627,11 @@ namespace EQ2Lexicon.ACTPlugin
             var serverName = ActHelpers.GetLoggingServerName();
             if (!string.IsNullOrWhiteSpace(charName) && _config.IsBlacklisted(charName, serverName))
             {
-                SetStatus($"EQ2 Lexicon: {charName} is blacklisted — uploads skipped");
+                SetStatus($"◇ EQ2 Lexicon · {charName} blacklisted");
                 return;
             }
 
-            SetStatus("EQ2 Lexicon: ready (uploads pending wire-up)");
+            SetStatus("✦ EQ2 Lexicon · watching");
         }
 
         private void SetStatus(string text, bool isError = false)

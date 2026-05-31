@@ -50,7 +50,7 @@ namespace EQ2Lexicon.ACTPlugin
             string loggerServer,
             EncounterSnapshot enc)
         {
-            return new Dictionary<string, object?>
+            var payload = new Dictionary<string, object?>
             {
                 ["logger_name"] = loggerName,
                 ["logger_server"] = loggerServer ?? "",
@@ -59,6 +59,66 @@ namespace EQ2Lexicon.ACTPlugin
                 ["damage_types"] = BuildDamageTypes(enc),
                 ["attack_types"] = BuildAttackTypes(enc),
             };
+
+            var warnings = ComputeClientWarnings(loggerServer, enc);
+            if (warnings.Count > 0)
+            {
+                payload["client_warnings"] = warnings;
+            }
+            return payload;
+        }
+
+        /// <summary>
+        /// Build the list of soft warnings the client wants the server
+        /// to record alongside this parse. These don't block the
+        /// upload — they're "flags on the play" the maintainer can
+        /// surface in admin tooling later.
+        ///
+        /// Currently emits:
+        ///   * <c>folder_hint_mismatch</c> — ACT's
+        ///     <c>HistoryRecord.FolderHint</c> for this encounter
+        ///     doesn't match the active log path's server name.
+        ///     Typically means the user dropped a downloaded log into
+        ///     the EQ2 logs directory: <c>logger_server</c> is now
+        ///     legit, but the encounter remembers it originated
+        ///     elsewhere. Not by itself proof of tampering — a user
+        ///     could legitimately archive + restore logs — but it
+        ///     deserves the flag.
+        ///
+        /// Rename detection (title doesn't match any enemy) is
+        /// deliberately NOT in this list — it's a hard block, not a
+        /// soft warning. The polling path raises
+        /// <see cref="EncounterCapture.OnTamperDetected"/> and Plugin
+        /// fires <see cref="UploadClient.ReportTamperAsync"/>, which
+        /// POSTs the suspect payload to a dedicated tamper-report
+        /// endpoint so the admin sees the attempted upload. The
+        /// regular leaderboard ingest is skipped entirely.
+        ///
+        /// Empty list returned when nothing's amiss (the caller then
+        /// omits the <c>client_warnings</c> field entirely so old
+        /// server versions don't see an unknown key).
+        /// </summary>
+        public static List<string> ComputeClientWarnings(
+            string? loggerServer,
+            EncounterSnapshot enc)
+        {
+            var warnings = new List<string>();
+            if (enc == null) return warnings;
+
+            // FolderHint check: both sides must be non-empty for the
+            // comparison to mean anything. Empty FolderHint means
+            // ACT didn't tag this encounter with a folder (older ACT
+            // builds, or our reflection read failed) — no signal, no
+            // warning. Empty loggerServer means we couldn't detect a
+            // server — same story.
+            if (!string.IsNullOrWhiteSpace(enc.FolderHint) &&
+                !string.IsNullOrWhiteSpace(loggerServer) &&
+                !string.Equals(enc.FolderHint.Trim(), loggerServer.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                warnings.Add("folder_hint_mismatch");
+            }
+
+            return warnings;
         }
 
         public static Dictionary<string, object?> BuildEncounter(EncounterSnapshot enc)

@@ -481,6 +481,162 @@ namespace EQ2Lexicon.ACTPlugin.Tests
             Assert.Equal("", payload2["logger_server"]);
         }
 
+        // ── ComputeClientWarnings (folder_hint_mismatch) ───────────────────
+        //
+        // The plugin emits `client_warnings:["folder_hint_mismatch"]`
+        // when ACT's per-encounter HistoryRecord.FolderHint disagrees
+        // with the logger_server we detected from the active log
+        // path's parent directory. This is a "flag on the play"
+        // signal — the user may have dropped a downloaded log into
+        // the EQ2 logs/<server>/ dir, so the path looks legit but
+        // ACT still remembers where the log came from.
+        //
+        // Soft warning only — the upload still proceeds.
+        //
+        // Rename detection (title vs enemy mismatch) is intentionally
+        // NOT here — it's a hard block handled by EncounterCapture +
+        // UploadClient.ReportTamperAsync, NOT a client_warnings entry.
+        // The separation is on purpose: client_warnings rides along
+        // with successful uploads; the tamper-report channel is a
+        // completely separate POST whose only purpose is the audit
+        // trail.
+
+        [Fact]
+        public void ComputeClientWarnings_EmitsMismatchWhenFolderHintDiffersFromServer()
+        {
+            var enc = MinimalEncounter();
+            enc.FolderHint = "Downloads";
+
+            var warnings = PayloadBuilder.ComputeClientWarnings("Varsoon", enc);
+
+            Assert.Contains("folder_hint_mismatch", warnings);
+        }
+
+        [Fact]
+        public void ComputeClientWarnings_NoWarningWhenFolderHintMatchesServer()
+        {
+            // Live tail: log path is <install>/logs/Varsoon/eq2log_X.txt,
+            // FolderHint is also "Varsoon". They agree — no flag.
+            var enc = MinimalEncounter();
+            enc.FolderHint = "Varsoon";
+
+            var warnings = PayloadBuilder.ComputeClientWarnings("Varsoon", enc);
+
+            Assert.Empty(warnings);
+        }
+
+        [Fact]
+        public void ComputeClientWarnings_ComparisonIsCaseInsensitive()
+        {
+            // ACT and the log path may capitalise differently. Don't
+            // false-positive on a case-only difference.
+            var enc = MinimalEncounter();
+            enc.FolderHint = "VARSOON";
+
+            var warnings = PayloadBuilder.ComputeClientWarnings("varsoon", enc);
+
+            Assert.Empty(warnings);
+        }
+
+        [Fact]
+        public void ComputeClientWarnings_TrimsBothSidesBeforeCompare()
+        {
+            var enc = MinimalEncounter();
+            enc.FolderHint = "  Varsoon  ";
+
+            var warnings = PayloadBuilder.ComputeClientWarnings("Varsoon", enc);
+
+            Assert.Empty(warnings);
+        }
+
+        [Theory]
+        [InlineData("", "Varsoon")]    // no FolderHint signal
+        [InlineData("   ", "Varsoon")] // whitespace = no signal
+        [InlineData(null, "Varsoon")]  // null hint = no signal
+        [InlineData("Varsoon", "")]    // no server signal
+        [InlineData("Varsoon", null)]  // null server = no signal
+        public void ComputeClientWarnings_EmptySidesProduceNoWarning(string? hint, string? server)
+        {
+            // If either side is empty we have no comparison to make —
+            // stay quiet rather than emit a misleading flag. Belt-and-
+            // brace: a real divergence requires BOTH a known FolderHint
+            // AND a known logger_server.
+            var enc = MinimalEncounter();
+            enc.FolderHint = hint ?? "";
+
+            var warnings = PayloadBuilder.ComputeClientWarnings(server, enc);
+
+            Assert.Empty(warnings);
+        }
+
+        [Fact]
+        public void ComputeClientWarnings_NullEncounterReturnsEmptyList()
+        {
+            // Defensive — caller currently never passes null, but
+            // calling code lives in two different assemblies and
+            // we don't want to invite a NRE if that changes.
+            var warnings = PayloadBuilder.ComputeClientWarnings("Varsoon", null!);
+
+            Assert.Empty(warnings);
+        }
+
+        [Fact]
+        public void ComputeClientWarnings_NeverEmitsTitleEnemyMismatch()
+        {
+            // The rename heuristic is a hard block via
+            // EncounterCapture.OnTamperDetected + ReportTamperAsync,
+            // never a client_warnings flag. This test pins that —
+            // an encounter whose title doesn't match any enemy
+            // shouldn't gain a soft warning here, because that would
+            // mean the renamed parse uploaded as a normal leaderboard
+            // entry (which is exactly what the tamper channel exists
+            // to prevent).
+            var enc = MinimalEncounter("TESTING");
+            enc.FolderHint = "Varsoon";
+            enc.Combatants.Add(Player("Menludiir"));
+            enc.AllyNames.Add("Menludiir");
+            enc.Combatants.Add(Enemy("a krait patriarch"));
+
+            var warnings = PayloadBuilder.ComputeClientWarnings("Varsoon", enc);
+
+            Assert.DoesNotContain("title_enemy_mismatch", warnings);
+            Assert.Empty(warnings);
+        }
+
+        // ── BuildPayload — client_warnings field shape ──────────────────────
+
+        [Fact]
+        public void BuildPayload_OmitsClientWarningsWhenNoneApply()
+        {
+            // Don't pollute the wire shape with an empty array — old
+            // server versions that don't know the field should never
+            // see it. Plugin only adds the key when there's something
+            // to flag.
+            var enc = MinimalEncounter();
+            enc.FolderHint = "Varsoon";
+            enc.Combatants.Add(Player("Menludiir"));
+            enc.AllyNames.Add("Menludiir");
+
+            var payload = PayloadBuilder.BuildPayload("Menludiir", "Varsoon", enc);
+
+            Assert.False(payload.ContainsKey("client_warnings"));
+        }
+
+        [Fact]
+        public void BuildPayload_AddsClientWarningsWhenFolderHintDiffers()
+        {
+            var enc = MinimalEncounter();
+            enc.FolderHint = "Downloads";
+            enc.Combatants.Add(Player("Menludiir"));
+            enc.AllyNames.Add("Menludiir");
+
+            var payload = PayloadBuilder.BuildPayload("Menludiir", "Varsoon", enc);
+
+            Assert.True(payload.ContainsKey("client_warnings"));
+            var list = Assert.IsType<List<string>>(payload["client_warnings"]);
+            Assert.Contains("folder_hint_mismatch", list);
+        }
+
         // ── OutgoingGroupToSwingType constant ───────────────────────────────
 
         [Fact]
