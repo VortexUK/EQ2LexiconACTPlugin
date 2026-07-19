@@ -40,7 +40,7 @@ jobs:
 
       # global.json pins the SDK version; setup-dotnet will read it.
       - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
