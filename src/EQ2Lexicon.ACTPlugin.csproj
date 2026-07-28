@@ -29,7 +29,7 @@
          Copyright is the generic redistribution notice — embedded font
          licences (Cinzel SIL OFL) stay called out separately in
          Resources/Fonts/OFL.txt. -->
-    <Version>0.1.16</Version>
+    <Version>0.1.17</Version>
     <Company>VortexUK</Company>
     <Product>EQ2 Lexicon Uploader</Product>
     <Description>Uploads ACT-parsed encounters to the EQ2 Lexicon site.</Description>
