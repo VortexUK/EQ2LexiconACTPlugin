@@ -472,7 +472,15 @@ namespace EQ2Lexicon.ACTPlugin
                 {
                     req.Headers.Add(TamperReasonHeaderName, safeReason);
                 }
-                req.Content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
+                // v0.1.17: gzip like UploadEncounterAsync — the tamper report
+                // carries the same full payload, and the 2026-07-28 route
+                // that killed plain ingest uploads at ~19 s killed these too.
+                // Same contract: HMAC over the UNCOMPRESSED JSON.
+                var gzBody = CompressUtf8Gzip(payloadJson);
+                var content = new ByteArrayContent(gzBody);
+                content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+                content.Headers.ContentEncoding.Add("gzip");
+                req.Content = content;
 
                 try
                 {
