@@ -1,5 +1,7 @@
 using System;
 using System.Diagnostics;
+using System.IO;
+using System.IO.Compression;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -49,7 +51,12 @@ namespace EQ2Lexicon.ACTPlugin
         {
             _http = new HttpClient
             {
-                Timeout = TimeSpan.FromSeconds(20),
+                // 60 s, not 20: uploads are background work in ACT, and the
+                // 2026-07-28 incident showed a raider on a ~120 kbit/s
+                // effective route timing out at 20 s mid-body. Patience
+                // costs nothing here; gzip (v0.1.16) shrinks the transfer
+                // itself, this is the safety margin on top.
+                Timeout = TimeSpan.FromSeconds(60),
             };
             // UA includes the assembly version so the server can see what
             // plugin version each upload came from. Useful for telemetry
@@ -130,9 +137,35 @@ namespace EQ2Lexicon.ACTPlugin
         /// Hard cap for the upload body. JavaScriptSerializer caps at 8 MB
         /// on the build side, but we belt-and-brace it here so an unexpected
         /// caller (or a corrupted snapshot) can't push a multi-hundred-MB
-        /// body over the wire.
+        /// body over the wire. Applied to the UNCOMPRESSED JSON — the server's
+        /// decompression guard (16 MiB) is sized against this.
         /// </summary>
         private const int MaxPayloadBytes = 10 * 1024 * 1024;
+
+        /// <summary>
+        /// Gzip-compress a JSON string's UTF-8 bytes for upload. ACT JSON is
+        /// highly repetitive and compresses 10-20× — on a slow or throttled
+        /// route that is the difference between a ~2 s upload and blowing the
+        /// HttpClient timeout entirely (2026-07-28 incident: 282 KB payload,
+        /// ~120 kbit/s effective throughput, hard-failed at 20 s).
+        ///
+        /// The HMAC contract is deliberately unchanged: the signature is
+        /// computed over the UNCOMPRESSED JSON, and the server inflates the
+        /// body before validating — so compressed and plain uploads sign
+        /// identically.
+        /// </summary>
+        public static byte[] CompressUtf8Gzip(string json)
+        {
+            var raw = Encoding.UTF8.GetBytes(json);
+            using (var ms = new MemoryStream())
+            {
+                using (var gz = new GZipStream(ms, CompressionLevel.Optimal, leaveOpen: true))
+                {
+                    gz.Write(raw, 0, raw.Length);
+                }
+                return ms.ToArray();
+            }
+        }
 
         /// <summary>
         /// Validates the user-entered server URL. Returns null when OK, or a
@@ -284,11 +317,20 @@ namespace EQ2Lexicon.ACTPlugin
             using (var req = new HttpRequestMessage(HttpMethod.Post, url))
             {
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiToken);
-                req.Content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
+                // v0.1.16: ship the body gzipped (see CompressUtf8Gzip).
+                // Requires server-side Content-Encoding: gzip support,
+                // deployed 2026-07-28 — the site inflates before parsing
+                // and before HMAC validation.
+                var gzBody = CompressUtf8Gzip(payloadJson);
+                var content = new ByteArrayContent(gzBody);
+                content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+                content.Headers.ContentEncoding.Add("gzip");
+                req.Content = content;
 
-                // HMAC the body with the API token as the key. The server
-                // recomputes and rejects if it doesn't match — see
-                // PayloadSigner for the threat-model caveats.
+                // HMAC the body with the API token as the key — over the
+                // UNCOMPRESSED JSON (the server validates after inflating).
+                // The server recomputes and rejects if it doesn't match —
+                // see PayloadSigner for the threat-model caveats.
                 try
                 {
                     var signature = PayloadSigner.Sign(payloadJson, apiToken);
